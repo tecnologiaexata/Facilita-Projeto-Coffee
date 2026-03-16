@@ -36,10 +36,11 @@ SAM2_CHECKPOINTS_DIR = SAM2_DIR / "checkpoints"
 SAM2_ENABLED = os.getenv("FCC_SAM2_ENABLED", "0") == "1"
 SAM2_DEVICE = os.getenv("FCC_SAM2_DEVICE", "cpu")
 SAM2_CONFIG = os.getenv("FCC_SAM2_CONFIG", "configs/sam2.1/sam2.1_hiera_s.yaml")
+SAM2_CHECKPOINT_FILE = os.getenv("FCC_SAM2_CHECKPOINT_FILE", "sam2.1_hiera_small.pt")
 SAM2_CHECKPOINT = Path(
     os.getenv(
         "FCC_SAM2_CHECKPOINT",
-        str(SAM2_CHECKPOINTS_DIR / "sam2.1_hiera_small.pt"),
+        str(SAM2_CHECKPOINTS_DIR / SAM2_CHECKPOINT_FILE),
     )
 )
 
