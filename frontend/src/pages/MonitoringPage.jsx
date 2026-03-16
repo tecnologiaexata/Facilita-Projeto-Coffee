@@ -118,24 +118,34 @@ export default function MonitoringPage() {
 
   useEffect(() => {
     let cancelled = false;
+    let timer = null;
+    let inFlight = false;
 
     async function readMonitoring() {
+      if (cancelled || inFlight) return;
+      inFlight = true;
       try {
         const payload = await getMonitoring();
         if (cancelled) return;
         setMonitoring(payload);
-        setStatus({ kind: "success", message: "Monitoramento atualizado automaticamente a cada 2s." });
+        setStatus({ kind: "success", message: "Monitoramento atualizado automaticamente a cada 5s." });
       } catch (error) {
         if (cancelled) return;
         setStatus({ kind: "error", message: error.message });
+      } finally {
+        inFlight = false;
+        if (!cancelled) {
+          timer = window.setTimeout(readMonitoring, 5000);
+        }
       }
     }
 
     readMonitoring();
-    const timer = window.setInterval(readMonitoring, 2000);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (timer) {
+        window.clearTimeout(timer);
+      }
     };
   }, []);
 
