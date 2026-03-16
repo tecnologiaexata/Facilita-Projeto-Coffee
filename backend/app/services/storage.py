@@ -1,0 +1,193 @@
+import json
+import re
+import shutil
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Iterable
+from uuid import uuid4
+
+from app.config import (
+    ANNOTATION_COLOR_MASKS_DIR,
+    ANNOTATION_IMAGES_DIR,
+    ANNOTATION_MASKS_DIR,
+    ANNOTATION_METADATA_DIR,
+    ANNOTATION_OVERLAYS_DIR,
+    CLASS_MAP,
+    CVAT_DIR,
+    DATASET_SPLIT_DIR,
+    INFERENCES_DIR,
+    REQUIRED_DIRS,
+    TRAINING_DIR,
+    URL_ROOT_DIR,
+)
+
+
+DIR_MODE = 0o777
+
+
+def ensure_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.chmod(DIR_MODE)
+    except PermissionError:
+        pass
+
+
+def ensure_storage() -> None:
+    for directory in REQUIRED_DIRS:
+        ensure_directory(directory)
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def make_asset_id(prefix: str = "sample") -> str:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    return f"{prefix}_{timestamp}_{uuid4().hex[:12]}"
+
+
+def slugify_name(filename: str) -> str:
+    stem = Path(filename).stem or "imagem"
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "-", stem).strip("-")
+    return cleaned or "imagem"
+
+
+def write_json(path: Path, payload: dict) -> None:
+    ensure_directory(path.parent)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def read_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def annotation_bundle(sample_id: str) -> dict[str, Path]:
+    return {
+        "image": ANNOTATION_IMAGES_DIR / f"{sample_id}.png",
+        "mask": ANNOTATION_MASKS_DIR / f"{sample_id}.png",
+        "color_mask": ANNOTATION_COLOR_MASKS_DIR / f"{sample_id}.png",
+        "overlay": ANNOTATION_OVERLAYS_DIR / f"{sample_id}.png",
+        "metadata": ANNOTATION_METADATA_DIR / f"{sample_id}.json",
+        "cvat": CVAT_DIR / f"{sample_id}.xml",
+    }
+
+
+def inference_bundle(run_id: str) -> dict[str, Path]:
+    base_dir = INFERENCES_DIR / run_id
+    return {
+        "base": base_dir,
+        "image": base_dir / "input.png",
+        "mask": base_dir / "mask.png",
+        "color_mask": base_dir / "colored_mask.png",
+        "overlay": base_dir / "overlay.png",
+        "metadata": base_dir / "result.json",
+    }
+
+
+def storage_url(path: Path) -> str:
+    relative = path.relative_to(URL_ROOT_DIR)
+    return f"/{relative.as_posix()}"
+
+
+def serialize_annotation_record(payload: dict) -> dict:
+    sample_id = payload["id"]
+    bundle = annotation_bundle(sample_id)
+    return {
+        **payload,
+        "image_url": storage_url(bundle["image"]),
+        "mask_url": storage_url(bundle["mask"]),
+        "color_mask_url": storage_url(bundle["color_mask"]),
+        "overlay_url": storage_url(bundle["overlay"]),
+        "cvat_url": storage_url(bundle["cvat"]),
+        "package_url": f"/api/annotations/{sample_id}/package",
+    }
+
+
+def list_annotation_records() -> list[dict]:
+    ensure_storage()
+    records: list[dict] = []
+    for metadata_path in sorted(ANNOTATION_METADATA_DIR.glob("*.json"), reverse=True):
+        payload = read_json(metadata_path)
+        records.append(serialize_annotation_record(payload))
+    return records
+
+
+def list_inference_records() -> list[dict]:
+    ensure_storage()
+    records: list[dict] = []
+    for metadata_path in sorted(INFERENCES_DIR.glob("*/result.json"), reverse=True):
+        payload = read_json(metadata_path)
+        run_id = payload["id"]
+        bundle = inference_bundle(run_id)
+        records.append(
+            {
+                **payload,
+                "image_url": storage_url(bundle["image"]),
+                "mask_url": storage_url(bundle["mask"]),
+                "color_mask_url": storage_url(bundle["color_mask"]),
+                "overlay_url": storage_url(bundle["overlay"]),
+            }
+        )
+    return records
+
+
+def latest_training_report() -> dict | None:
+    report_path = TRAINING_DIR / "latest.json"
+    if not report_path.exists():
+        return None
+    return read_json(report_path)
+
+
+def clear_directory(directory: Path) -> None:
+    if directory.exists():
+        shutil.rmtree(directory)
+    ensure_directory(directory)
+
+
+def rebuild_dataset_split(records: Iterable[dict]) -> dict[str, list[str]]:
+    records = list(records)
+    clear_directory(DATASET_SPLIT_DIR)
+    split_map = build_split_map(records)
+    for split_name, ids in split_map.items():
+        image_dir = DATASET_SPLIT_DIR / split_name / "images"
+        mask_dir = DATASET_SPLIT_DIR / split_name / "masks"
+        ensure_directory(image_dir)
+        ensure_directory(mask_dir)
+        for sample_id in ids:
+            bundle = annotation_bundle(sample_id)
+            shutil.copy2(bundle["image"], image_dir / bundle["image"].name)
+            shutil.copy2(bundle["mask"], mask_dir / bundle["mask"].name)
+    return split_map
+
+
+def build_split_map(records: list[dict]) -> dict[str, list[str]]:
+    ordered_ids = [record["id"] for record in sorted(records, key=lambda item: item["created_at"])]
+    total = len(ordered_ids)
+    if total == 0:
+        return {"train": [], "val": [], "test": []}
+    if total == 1:
+        return {"train": ordered_ids, "val": [], "test": []}
+    if total == 2:
+        return {"train": [ordered_ids[0]], "val": [ordered_ids[1]], "test": []}
+
+    train_end = max(1, round(total * 0.7))
+    val_size = max(1, round(total * 0.2))
+    test_size = total - train_end - val_size
+    if test_size <= 0:
+        test_size = 1
+        train_end = max(1, train_end - 1)
+
+    val_end = min(total - test_size, train_end + val_size)
+    return {
+        "train": ordered_ids[:train_end],
+        "val": ordered_ids[train_end:val_end],
+        "test": ordered_ids[val_end:],
+    }
+
+
+def class_catalog() -> list[dict]:
+    return [
+        {"id": class_id, **meta}
+        for class_id, meta in sorted(CLASS_MAP.items(), key=lambda item: item[0])
+    ]

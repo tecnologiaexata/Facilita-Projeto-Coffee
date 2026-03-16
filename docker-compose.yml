@@ -1,0 +1,27 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      args:
+        INSTALL_SAM2: ${FCC_INSTALL_SAM2:-0}
+        SAM2_REPO_REF: ${FCC_SAM2_REPO_REF:-main}
+    container_name: facilita-coffee-backend
+    environment:
+      FCC_STORAGE_DIR: /app/storage
+      FCC_SAM2_ENABLED: ${FCC_SAM2_ENABLED:-0}
+      FCC_SAM2_DEVICE: ${FCC_SAM2_DEVICE:-cpu}
+      FCC_SAM2_CONFIG: ${FCC_SAM2_CONFIG:-configs/sam2.1/sam2.1_hiera_s.yaml}
+      FCC_SAM2_CHECKPOINT: /app/storage/sam2/checkpoints/${FCC_SAM2_CHECKPOINT_FILE:-sam2.1_hiera_small.pt}
+    volumes:
+      - ./storage:/app/storage
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: facilita-coffee-frontend
+    depends_on:
+      - backend
+    ports:
+      - "8050:80"
+    restart: unless-stopped

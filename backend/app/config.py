@@ -1,0 +1,62 @@
+import os
+from pathlib import Path
+
+
+APP_DIR = Path(__file__).resolve().parent
+BACKEND_DIR = APP_DIR.parent
+PROJECT_DIR = BACKEND_DIR.parent
+DEFAULT_STORAGE_DIR = PROJECT_DIR / "storage"
+STORAGE_DIR = Path(os.getenv("FCC_STORAGE_DIR", DEFAULT_STORAGE_DIR))
+URL_ROOT_DIR = STORAGE_DIR.parent
+
+
+CLASS_MAP = {
+    0: {"slug": "fundo", "label": "Fundo", "color": (229, 78, 78)},
+    1: {"slug": "folhagem", "label": "Folhagem", "color": (109, 201, 255)},
+    2: {"slug": "fruto", "label": "Fruto", "color": (245, 210, 74)},
+}
+
+
+ANNOTATIONS_DIR = STORAGE_DIR / "dataset_anotado"
+ANNOTATION_IMAGES_DIR = ANNOTATIONS_DIR / "images"
+ANNOTATION_MASKS_DIR = ANNOTATIONS_DIR / "masks"
+ANNOTATION_COLOR_MASKS_DIR = ANNOTATIONS_DIR / "colored_masks"
+ANNOTATION_OVERLAYS_DIR = ANNOTATIONS_DIR / "overlays"
+ANNOTATION_METADATA_DIR = ANNOTATIONS_DIR / "metadata"
+
+CVAT_DIR = STORAGE_DIR / "cvat"
+DATASET_SPLIT_DIR = STORAGE_DIR / "dataset"
+MODELS_DIR = STORAGE_DIR / "models"
+TRAINING_DIR = STORAGE_DIR / "training"
+INFERENCES_DIR = STORAGE_DIR / "inferences"
+SAM2_DIR = STORAGE_DIR / "sam2"
+SAM2_SESSIONS_DIR = SAM2_DIR / "sessions"
+SAM2_CHECKPOINTS_DIR = SAM2_DIR / "checkpoints"
+
+SAM2_ENABLED = os.getenv("FCC_SAM2_ENABLED", "0") == "1"
+SAM2_DEVICE = os.getenv("FCC_SAM2_DEVICE", "cpu")
+SAM2_CONFIG = os.getenv("FCC_SAM2_CONFIG", "configs/sam2.1/sam2.1_hiera_s.yaml")
+SAM2_CHECKPOINT = Path(
+    os.getenv(
+        "FCC_SAM2_CHECKPOINT",
+        str(SAM2_CHECKPOINTS_DIR / "sam2.1_hiera_small.pt"),
+    )
+)
+
+
+REQUIRED_DIRS = [
+    STORAGE_DIR,
+    ANNOTATION_IMAGES_DIR,
+    ANNOTATION_MASKS_DIR,
+    ANNOTATION_COLOR_MASKS_DIR,
+    ANNOTATION_OVERLAYS_DIR,
+    ANNOTATION_METADATA_DIR,
+    CVAT_DIR,
+    DATASET_SPLIT_DIR,
+    MODELS_DIR,
+    TRAINING_DIR,
+    INFERENCES_DIR,
+    SAM2_DIR,
+    SAM2_SESSIONS_DIR,
+    SAM2_CHECKPOINTS_DIR,
+]
