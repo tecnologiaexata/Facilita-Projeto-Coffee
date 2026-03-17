@@ -1,8 +1,10 @@
-export default function ImagePreviewFigure({ src, alt, caption }) {
+export default function ImagePreviewFigure({ src, previewSrc, alt, caption, loading = "lazy" }) {
+  const displaySrc = previewSrc || src;
+
   return (
     <figure className="gallery-figure">
       <div className="gallery-figure__frame">
-        <img src={src} alt={alt} />
+        <img src={displaySrc} alt={alt} loading={loading} decoding="async" />
         <a
           className="gallery-figure__zoom"
           href={src}

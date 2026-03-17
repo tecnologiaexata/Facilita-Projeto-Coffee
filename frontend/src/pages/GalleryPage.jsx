@@ -233,9 +233,15 @@ export default function GalleryPage() {
                     </div>
                   </header>
                   <div className="gallery-card__images">
-                    <ImagePreviewFigure src={item.image_url} alt={item.original_filename} caption="Original" />
+                    <ImagePreviewFigure
+                      src={item.image_url}
+                      previewSrc={item.image_preview_url}
+                      alt={item.original_filename}
+                      caption="Original"
+                    />
                     <ImagePreviewFigure
                       src={item.overlay_url}
+                      previewSrc={item.overlay_preview_url}
                       alt={`overlay-${item.original_filename}`}
                       caption="Overlay"
                     />

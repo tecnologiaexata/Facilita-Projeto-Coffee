@@ -177,11 +177,19 @@ export default function InferencePage() {
               ) : null}
 
               <div className="gallery-card__images">
-                <ImagePreviewFigure src={result.image_url} alt={result.original_filename} caption="Original" />
+                <ImagePreviewFigure
+                  src={result.image_url}
+                  previewSrc={result.image_preview_url}
+                  alt={result.original_filename}
+                  caption="Original"
+                  loading="eager"
+                />
                 <ImagePreviewFigure
                   src={result.overlay_url}
+                  previewSrc={result.overlay_preview_url}
                   alt={`overlay-${result.original_filename}`}
                   caption="Overlay previsto"
+                  loading="eager"
                 />
               </div>
                 </div>
@@ -224,9 +232,15 @@ export default function InferencePage() {
                     </div>
                   </header>
                   <div className="gallery-card__images">
-                    <ImagePreviewFigure src={item.image_url} alt={item.original_filename} caption="Entrada" />
+                    <ImagePreviewFigure
+                      src={item.image_url}
+                      previewSrc={item.image_preview_url}
+                      alt={item.original_filename}
+                      caption="Entrada"
+                    />
                     <ImagePreviewFigure
                       src={item.overlay_url}
+                      previewSrc={item.overlay_preview_url}
                       alt={`infer-${item.original_filename}`}
                       caption="Segmentacao"
                     />

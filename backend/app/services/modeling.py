@@ -24,6 +24,7 @@ from app.services.storage import (
     annotation_bundle,
     class_catalog,
     ensure_directory,
+    ensure_preview_image,
     inference_bundle,
     latest_training_report,
     list_annotation_records,
@@ -32,6 +33,7 @@ from app.services.storage import (
     now_iso,
     read_json,
     rebuild_dataset_split,
+    storage_url,
     write_json,
 )
 
@@ -295,9 +297,11 @@ def run_inference(image_file: UploadFile) -> dict:
         return {
             **payload,
             "image_url": f"/storage/inferences/{run_id}/input.png",
+            "image_preview_url": storage_url(ensure_preview_image(bundle["image"], bundle["image_preview"])),
             "mask_url": f"/storage/inferences/{run_id}/mask.png",
             "color_mask_url": f"/storage/inferences/{run_id}/colored_mask.png",
             "overlay_url": f"/storage/inferences/{run_id}/overlay.png",
+            "overlay_preview_url": storage_url(ensure_preview_image(bundle["overlay"], bundle["overlay_preview"])),
         }
 
 

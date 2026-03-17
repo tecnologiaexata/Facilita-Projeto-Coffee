@@ -6,12 +6,16 @@ from pathlib import Path
 from typing import Iterable
 from uuid import uuid4
 
+from PIL import Image
+
 from app.config import (
     ANNOTATION_COLOR_MASKS_DIR,
     ANNOTATION_IMAGES_DIR,
+    ANNOTATION_IMAGE_PREVIEWS_DIR,
     ANNOTATION_MASKS_DIR,
     ANNOTATION_METADATA_DIR,
     ANNOTATION_OVERLAYS_DIR,
+    ANNOTATION_OVERLAY_PREVIEWS_DIR,
     CLASS_MAP,
     CVAT_DIR,
     DATASET_SPLIT_DIR,
@@ -23,6 +27,9 @@ from app.config import (
 
 
 DIR_MODE = 0o777
+PREVIEW_MAX_EDGE = 1600
+PREVIEW_JPEG_QUALITY = 82
+RESAMPLING_LANCZOS = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
 
 
 def ensure_directory(path: Path) -> None:
@@ -65,9 +72,11 @@ def read_json(path: Path) -> dict:
 def annotation_bundle(sample_id: str) -> dict[str, Path]:
     return {
         "image": ANNOTATION_IMAGES_DIR / f"{sample_id}.png",
+        "image_preview": ANNOTATION_IMAGE_PREVIEWS_DIR / f"{sample_id}.jpg",
         "mask": ANNOTATION_MASKS_DIR / f"{sample_id}.png",
         "color_mask": ANNOTATION_COLOR_MASKS_DIR / f"{sample_id}.png",
         "overlay": ANNOTATION_OVERLAYS_DIR / f"{sample_id}.png",
+        "overlay_preview": ANNOTATION_OVERLAY_PREVIEWS_DIR / f"{sample_id}.jpg",
         "metadata": ANNOTATION_METADATA_DIR / f"{sample_id}.json",
         "cvat": CVAT_DIR / f"{sample_id}.xml",
     }
@@ -78,9 +87,11 @@ def inference_bundle(run_id: str) -> dict[str, Path]:
     return {
         "base": base_dir,
         "image": base_dir / "input.png",
+        "image_preview": base_dir / "input_preview.jpg",
         "mask": base_dir / "mask.png",
         "color_mask": base_dir / "colored_mask.png",
         "overlay": base_dir / "overlay.png",
+        "overlay_preview": base_dir / "overlay_preview.jpg",
         "metadata": base_dir / "result.json",
     }
 
@@ -90,15 +101,38 @@ def storage_url(path: Path) -> str:
     return f"/{relative.as_posix()}"
 
 
+def ensure_preview_image(source_path: Path, preview_path: Path) -> Path:
+    if not source_path.exists():
+        return source_path
+    if preview_path.exists() and preview_path.stat().st_mtime >= source_path.stat().st_mtime:
+        return preview_path
+
+    ensure_directory(preview_path.parent)
+    with Image.open(source_path) as source_image:
+        preview = source_image.convert("RGB")
+        preview.thumbnail((PREVIEW_MAX_EDGE, PREVIEW_MAX_EDGE), RESAMPLING_LANCZOS)
+        preview.save(
+            preview_path,
+            format="JPEG",
+            quality=PREVIEW_JPEG_QUALITY,
+            optimize=True,
+        )
+    return preview_path
+
+
 def serialize_annotation_record(payload: dict) -> dict:
     sample_id = payload["id"]
     bundle = annotation_bundle(sample_id)
+    image_preview_path = ensure_preview_image(bundle["image"], bundle["image_preview"])
+    overlay_preview_path = ensure_preview_image(bundle["overlay"], bundle["overlay_preview"])
     return {
         **payload,
         "image_url": storage_url(bundle["image"]),
+        "image_preview_url": storage_url(image_preview_path),
         "mask_url": storage_url(bundle["mask"]),
         "color_mask_url": storage_url(bundle["color_mask"]),
         "overlay_url": storage_url(bundle["overlay"]),
+        "overlay_preview_url": storage_url(overlay_preview_path),
         "cvat_url": storage_url(bundle["cvat"]),
         "package_url": f"/api/annotations/{sample_id}/package",
     }
@@ -120,13 +154,17 @@ def list_inference_records() -> list[dict]:
         payload = read_json(metadata_path)
         run_id = payload["id"]
         bundle = inference_bundle(run_id)
+        image_preview_path = ensure_preview_image(bundle["image"], bundle["image_preview"])
+        overlay_preview_path = ensure_preview_image(bundle["overlay"], bundle["overlay_preview"])
         records.append(
             {
                 **payload,
                 "image_url": storage_url(bundle["image"]),
+                "image_preview_url": storage_url(image_preview_path),
                 "mask_url": storage_url(bundle["mask"]),
                 "color_mask_url": storage_url(bundle["color_mask"]),
                 "overlay_url": storage_url(bundle["overlay"]),
+                "overlay_preview_url": storage_url(overlay_preview_path),
             }
         )
     return records
