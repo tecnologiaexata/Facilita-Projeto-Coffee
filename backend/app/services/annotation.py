@@ -12,7 +12,9 @@ from app.services.storage import (
     annotation_bundle,
     list_annotation_payloads,
     list_annotation_records,
+    load_annotation_record,
     make_asset_id,
+    make_stable_asset_id,
     now_iso,
     read_json,
     rebuild_dataset_split,
@@ -160,12 +162,27 @@ def save_annotation(
     image_file: UploadFile,
     mask_file: UploadFile,
     sample_id: str | None = None,
+    request_id: str | None = None,
 ) -> dict:
     with tracked_task(
         kind="annotation",
         label="Salvar anotacao manual",
-        metadata={"filename": image_file.filename or "imagem.png"},
+        metadata={
+            "filename": image_file.filename or "imagem.png",
+            "request_id": request_id,
+        },
     ) as task:
+        resolved_sample_id = sample_id or (
+            make_stable_asset_id("annot", request_id) if request_id else make_asset_id("annot")
+        )
+        existing_record = load_annotation_record(resolved_sample_id) if not sample_id and request_id else None
+        if existing_record is not None:
+            task.update(
+                phase="Retornando anotacao ja persistida",
+                metadata={"sample_id": existing_record["id"]},
+            )
+            return existing_record
+
         task.update(phase="Lendo imagem e mascara")
         source_image = read_upload_image(image_file)
         mask_image = read_upload_image(mask_file)
@@ -178,9 +195,10 @@ def save_annotation(
         record = persist_annotation_record(
             source_image,
             class_mask,
-            sample_id=sample_id,
+            sample_id=resolved_sample_id,
             original_filename=image_file.filename or None,
-            file_label=slugify_name(image_file.filename or sample_id or "imagem"),
+            file_label=slugify_name(image_file.filename or resolved_sample_id or "imagem"),
+            extra_payload={"request_id": request_id} if request_id else None,
         )
         task.update(phase="Concluido", metadata={"sample_id": record["id"]})
         return record

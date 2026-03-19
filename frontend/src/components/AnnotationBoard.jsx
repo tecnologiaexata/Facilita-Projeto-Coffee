@@ -45,6 +45,13 @@ const TOOL_OPTIONS = [
   { id: "sam-box", label: "SAM Caixa" },
 ];
 
+function createClientRequestId(prefix = "request") {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
 function classColor(classSlug, alpha = 0.45) {
   const [red, green, blue] = CLASS_COLORS[classSlug] || CLASS_COLORS.fruto;
   return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
@@ -70,6 +77,8 @@ export default function AnnotationBoard({
   isPreviewMode = false,
   canSave = false,
   isSaving = false,
+  backendAvailable = true,
+  backendStatusMessage = "",
   onBrushSizeChange,
   onReadyChange = NOOP,
   onDirtyChange,
@@ -101,7 +110,13 @@ export default function AnnotationBoard({
   const [suggestionMeta, setSuggestionMeta] = useState(null);
   const [historyDepth, setHistoryDepth] = useState(0);
 
-  const samEnabled = samAllowed && Boolean(sam2Status?.available);
+  const backendUnavailableMessage =
+    backendStatusMessage || "Backend indisponivel ou reiniciando. Aguarde a API voltar.";
+  const samEnabled = backendAvailable && samAllowed && Boolean(sam2Status?.available);
+  const sam2SessionRequestId = useMemo(
+    () => (imageFile ? createClientRequestId("sam2-session") : ""),
+    [imageFile]
+  );
 
   useEffect(() => {
     if (!imageFile) {
@@ -260,6 +275,15 @@ export default function AnnotationBoard({
       return undefined;
     }
 
+    if (!backendAvailable) {
+      setToolMode("brush");
+      setSam2RequestState({
+        kind: "error",
+        message: backendUnavailableMessage,
+      });
+      return undefined;
+    }
+
     if (!sam2Status) {
       setSam2RequestState({ kind: "loading", message: "Verificando disponibilidade do SAM 2..." });
       return undefined;
@@ -277,7 +301,7 @@ export default function AnnotationBoard({
     async function bootSession() {
       setSam2RequestState({ kind: "loading", message: "Preparando sessao do SAM 2..." });
       try {
-        const payload = await createSam2Session(imageFile);
+        const payload = await createSam2Session(imageFile, sam2SessionRequestId);
         if (!isActive) return;
         setSam2Session(payload.item);
         setSam2RequestState({
@@ -295,7 +319,7 @@ export default function AnnotationBoard({
     return () => {
       isActive = false;
     };
-  }, [imageFile, sam2Status, samAllowed]);
+  }, [backendAvailable, backendUnavailableMessage, imageFile, sam2Status, samAllowed, sam2SessionRequestId]);
 
   const lockedLevels = useMemo(
     () =>
@@ -642,7 +666,7 @@ export default function AnnotationBoard({
   }
 
   async function exportMask() {
-    if (isSaving || !canSave) return;
+    if (isSaving || !canSave || !backendAvailable) return;
     const blob = await buildMaskBlob();
     if (!blob) return;
     await onExportMask(blob);
@@ -674,6 +698,10 @@ export default function AnnotationBoard({
   }
 
   async function requestSuggestion() {
+    if (!backendAvailable) {
+      setSam2RequestState({ kind: "error", message: backendUnavailableMessage });
+      return;
+    }
     if (!sam2Session?.id || isSaving || isPreviewMode) return;
     if (!sam2Points.length && !sam2Box) {
       setSam2RequestState({
@@ -871,13 +899,24 @@ export default function AnnotationBoard({
             </button>
           ) : null}
           {canSave ? (
-            <button className="button" type="button" onClick={exportMask} disabled={!imageInfo || isSaving}>
+            <button
+              className="button"
+              type="button"
+              onClick={exportMask}
+              disabled={!backendAvailable || !imageInfo || isSaving}
+            >
               {isSaving ? <span className="button-spinner" aria-hidden="true" /> : null}
               {isSaving ? "Salvando..." : "Salvar anotacao"}
             </button>
           ) : null}
         </div>
       </div>
+
+      {canSave && !backendAvailable ? (
+        <div className="status status--error status--inline">
+          <span>{backendUnavailableMessage}</span>
+        </div>
+      ) : null}
 
       {samAllowed && !isPreviewMode ? (
         <div className="annotator__sam-panel">
@@ -886,7 +925,7 @@ export default function AnnotationBoard({
               className="button button--ghost"
               type="button"
               onClick={requestSuggestion}
-              disabled={!sam2Session?.id || (!sam2Points.length && !sam2Box) || isSaving}
+              disabled={!backendAvailable || !sam2Session?.id || (!sam2Points.length && !sam2Box) || isSaving}
             >
               Sugerir com SAM 2
             </button>

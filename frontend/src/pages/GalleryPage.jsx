@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useOutletContext } from "react-router-dom";
 import ImagePreviewFigure from "../components/ImagePreviewFigure";
 import { deleteAnnotation, getAnnotations, getMeta, getTraining, runTraining } from "../lib/api";
 
@@ -66,6 +66,11 @@ function buildTrainingProgressMessage(job, prefix = "Treino em background") {
 }
 
 export default function GalleryPage() {
+  const backendStatus = useOutletContext();
+  const backendAvailable = backendStatus?.available !== false;
+  const backendStatusMessage =
+    backendStatus?.message
+    || "Backend indisponivel ou reiniciando. Aguarde a API voltar para retomar as acoes.";
   const [annotations, setAnnotations] = useState([]);
   const [meta, setMeta] = useState(null);
   const [pageIndex, setPageIndex] = useState(0);
@@ -76,11 +81,15 @@ export default function GalleryPage() {
   const isTrainingRunning = Boolean(trainingJob?.is_active);
 
   useEffect(() => {
+    if (!backendAvailable) {
+      setTrainingState({ kind: "error", message: backendStatusMessage });
+      return;
+    }
     loadPage(pageIndex);
-  }, [pageIndex]);
+  }, [pageIndex, backendAvailable, backendStatusMessage]);
 
   useEffect(() => {
-    if (!trainingJob?.is_active) {
+    if (!backendAvailable || !trainingJob?.is_active) {
       return undefined;
     }
 
@@ -140,7 +149,7 @@ export default function GalleryPage() {
         window.clearTimeout(timer);
       }
     };
-  }, [trainingJob?.id, trainingJob?.status, pageIndex]);
+  }, [backendAvailable, trainingJob?.id, trainingJob?.status, pageIndex]);
 
   async function loadPage(nextPageIndex = pageIndex) {
     try {
@@ -165,6 +174,10 @@ export default function GalleryPage() {
   }
 
   async function handleTrain() {
+    if (!backendAvailable) {
+      setTrainingState({ kind: "error", message: backendStatusMessage });
+      return;
+    }
     setTrainingState({ kind: "loading", message: "Iniciando treino em background..." });
     try {
       const payload = await runTraining();
@@ -193,6 +206,10 @@ export default function GalleryPage() {
   }
 
   async function handleDelete(item) {
+    if (!backendAvailable) {
+      setTrainingState({ kind: "error", message: backendStatusMessage });
+      return;
+    }
     if (!window.confirm(`Excluir a anotacao ${item.original_filename}?`)) return;
     setDeletingId(item.id);
     setTrainingState({
@@ -219,6 +236,10 @@ export default function GalleryPage() {
   }
 
   function handleDownloadModel() {
+    if (!backendAvailable) {
+      setTrainingState({ kind: "error", message: backendStatusMessage });
+      return;
+    }
     const downloadUrl = meta?.training?.download_url;
     if (!downloadUrl) return;
     const anchor = document.createElement("a");
@@ -236,6 +257,12 @@ export default function GalleryPage() {
   const pageEnd = totalAnnotations
     ? Math.min(totalAnnotations, pageIndex * GALLERY_PAGE_SIZE + annotations.length)
     : 0;
+
+  function blockRemoteNavigation(event) {
+    if (backendAvailable) return;
+    event.preventDefault();
+    setTrainingState({ kind: "error", message: backendStatusMessage });
+  }
 
   return (
     <section className="stack">
@@ -266,7 +293,7 @@ export default function GalleryPage() {
               type="button"
               className="button"
               onClick={handleTrain}
-              disabled={!totalAnnotations || isTrainingRunning || Boolean(deletingId)}
+              disabled={!backendAvailable || !totalAnnotations || isTrainingRunning || Boolean(deletingId)}
             >
               {isTrainingRunning ? "Treino em andamento..." : "Treinar modelo"}
             </button>
@@ -274,7 +301,7 @@ export default function GalleryPage() {
               type="button"
               className="button button--ghost"
               onClick={handleDownloadModel}
-              disabled={!meta?.training?.download_url || isTrainingRunning || Boolean(deletingId)}
+              disabled={!backendAvailable || !meta?.training?.download_url || isTrainingRunning || Boolean(deletingId)}
             >
               Baixar modelo
             </button>
@@ -315,7 +342,7 @@ export default function GalleryPage() {
                     type="button"
                     className="button button--ghost"
                     onClick={() => setPageIndex((current) => Math.max(current - 1, 0))}
-                    disabled={pageIndex === 0 || Boolean(deletingId)}
+                    disabled={!backendAvailable || pageIndex === 0 || Boolean(deletingId)}
                   >
                     Anterior
                   </button>
@@ -323,7 +350,7 @@ export default function GalleryPage() {
                     type="button"
                     className="button button--ghost"
                     onClick={() => setPageIndex((current) => Math.min(current + 1, totalPages - 1))}
-                    disabled={pageIndex >= totalPages - 1 || Boolean(deletingId)}
+                    disabled={!backendAvailable || pageIndex >= totalPages - 1 || Boolean(deletingId)}
                   >
                     Proxima
                   </button>
@@ -349,29 +376,37 @@ export default function GalleryPage() {
                     </div>
                     <div className="gallery-card__actions">
                       <Link
-                        className="button button--ghost button--small"
+                        className={`button button--ghost button--small${backendAvailable ? "" : " is-disabled"}`}
                         to={`/anotar?sample=${item.id}`}
+                        onClick={blockRemoteNavigation}
+                        aria-disabled={!backendAvailable}
                       >
                         Editar
                       </Link>
                       <a
-                        className="button button--ghost button--small"
+                        className={`button button--ghost button--small${backendAvailable ? "" : " is-disabled"}`}
                         href={item.image_url}
                         download={`${item.file_label || item.id}.png`}
+                        onClick={blockRemoteNavigation}
+                        aria-disabled={!backendAvailable}
                       >
                         Imagem
                       </a>
                       <a
-                        className="button button--ghost button--small"
+                        className={`button button--ghost button--small${backendAvailable ? "" : " is-disabled"}`}
                         href={item.cvat_url}
                         download={`${item.file_label || item.id}.xml`}
+                        onClick={blockRemoteNavigation}
+                        aria-disabled={!backendAvailable}
                       >
                         XML CVAT
                       </a>
                       <a
-                        className="button button--ghost button--small"
+                        className={`button button--ghost button--small${backendAvailable ? "" : " is-disabled"}`}
                         href={item.package_url}
                         download
+                        onClick={blockRemoteNavigation}
+                        aria-disabled={!backendAvailable}
                       >
                         ZIP
                       </a>
@@ -379,7 +414,7 @@ export default function GalleryPage() {
                         type="button"
                         className="button button--ghost button--danger button--small"
                         onClick={() => handleDelete(item)}
-                        disabled={deletingId === item.id}
+                        disabled={!backendAvailable || deletingId === item.id}
                       >
                         {deletingId === item.id ? "Excluindo..." : "Excluir"}
                       </button>

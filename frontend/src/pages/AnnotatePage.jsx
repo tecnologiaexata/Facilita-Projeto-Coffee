@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useOutletContext, useSearchParams } from "react-router-dom";
 import AnnotationBoard from "../components/AnnotationBoard";
 import { deleteAnnotation, getAnnotation, getSam2Status, saveAnnotation } from "../lib/api";
 
@@ -178,7 +178,19 @@ async function inspectStoredMask(maskUrl) {
   return { fruto: hasFruto, folhagem: hasFolhagem };
 }
 
+function createClientRequestId(prefix = "request") {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
 export default function AnnotatePage() {
+  const backendStatus = useOutletContext();
+  const backendAvailable = backendStatus?.available !== false;
+  const backendStatusMessage =
+    backendStatus?.message
+    || "Backend indisponivel ou reiniciando. Aguarde a API voltar para retomar as acoes.";
   const [searchParams, setSearchParams] = useSearchParams();
   const [selectedFile, setSelectedFile] = useState(null);
   const [stepIndex, setStepIndex] = useState(0);
@@ -191,20 +203,29 @@ export default function AnnotatePage() {
   const [isClearing, setIsClearing] = useState(false);
   const [clearModalOpen, setClearModalOpen] = useState(false);
   const [currentAnnotationId, setCurrentAnnotationId] = useState("");
+  const [saveRequestId, setSaveRequestId] = useState(() => createClientRequestId("annot-save"));
   const [fileInputKey, setFileInputKey] = useState(0);
   const [hasPendingSave, setHasPendingSave] = useState(false);
   const [initialMaskUrl, setInitialMaskUrl] = useState("");
 
   useEffect(() => {
+    if (!backendAvailable) {
+      setSam2Status(null);
+      return;
+    }
     loadSam2Status();
-  }, []);
+  }, [backendAvailable]);
 
   const sampleToEdit = searchParams.get("sample") || "";
 
   useEffect(() => {
     if (!sampleToEdit) return;
+    if (!backendAvailable) {
+      setStatus({ kind: "error", message: backendStatusMessage });
+      return;
+    }
     loadAnnotationForEditing(sampleToEdit);
-  }, [sampleToEdit]);
+  }, [sampleToEdit, backendAvailable, backendStatusMessage]);
 
   const activeStep = WIZARD_STEPS[stepIndex];
   const isPreviewStep = activeStep.id === "preview";
@@ -238,6 +259,7 @@ export default function AnnotatePage() {
     setBrushSize(24);
     setStepState(buildInitialStepState());
     setCurrentAnnotationId("");
+    setSaveRequestId("");
     setHasPendingSave(false);
     setInitialMaskUrl("");
     setFileInputKey((current) => current + 1);
@@ -247,6 +269,7 @@ export default function AnnotatePage() {
     const nextFile = event.target.files?.[0] ?? null;
     setSelectedFile(nextFile);
     setCurrentAnnotationId("");
+    setSaveRequestId(nextFile ? createClientRequestId("annot-save") : "");
     setStepState(buildInitialStepState());
     setHasPendingSave(false);
     setInitialMaskUrl("");
@@ -275,6 +298,7 @@ export default function AnnotatePage() {
 
       setSelectedFile(imageFile);
       setCurrentAnnotationId(item.id);
+      setSaveRequestId(item.request_id || createClientRequestId("annot-save"));
       setInitialMaskUrl(item.mask_url);
       setStepState(nextStepState);
       setHasPendingSave(false);
@@ -317,14 +341,24 @@ export default function AnnotatePage() {
 
   async function handleExportMask(maskBlob) {
     if (!selectedFile || !isPreviewStep) return;
+    if (!backendAvailable) {
+      setStatus({ kind: "error", message: backendStatusMessage });
+      return;
+    }
     setIsSaving(true);
     setStatus({
       kind: "loading",
       message: "Salvando anotacao completa da foto...",
     });
     try {
-      const payload = await saveAnnotation(selectedFile, maskBlob, currentAnnotationId);
+      const payload = await saveAnnotation(
+        selectedFile,
+        maskBlob,
+        currentAnnotationId,
+        currentAnnotationId ? "" : saveRequestId,
+      );
       setCurrentAnnotationId(payload.item.id);
+      setSaveRequestId(payload.item.request_id || saveRequestId || createClientRequestId("annot-save"));
       setHasPendingSave(false);
       setStepState({
         fruto: { dirty: true, completed: true },
@@ -380,6 +414,10 @@ export default function AnnotatePage() {
   }
 
   async function handleClearAll() {
+    if (currentAnnotationId && !backendAvailable) {
+      setStatus({ kind: "error", message: backendStatusMessage });
+      return;
+    }
     setIsClearing(true);
     setStatus({ kind: "loading", message: "Limpando anotacao atual..." });
     try {
@@ -406,7 +444,7 @@ export default function AnnotatePage() {
             type="button"
             className="button button--ghost button--small"
             onClick={() => setClearModalOpen(true)}
-            disabled={!selectedFile && !currentAnnotationId}
+            disabled={(!selectedFile && !currentAnnotationId) || (currentAnnotationId && !backendAvailable)}
           >
             Limpar tudo
           </button>
@@ -456,6 +494,8 @@ export default function AnnotatePage() {
           isPreviewMode={isPreviewStep}
           canSave={isPreviewStep}
           isSaving={isSaving}
+          backendAvailable={backendAvailable}
+          backendStatusMessage={backendStatusMessage}
           onBrushSizeChange={setBrushSize}
           onDirtyChange={markCurrentStepDirty}
           onStepEdit={markCurrentStepEdited}

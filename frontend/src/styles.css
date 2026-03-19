@@ -130,6 +130,10 @@ img {
   margin-top: 26px;
 }
 
+.shell__status {
+  margin-top: 18px;
+}
+
 .page-grid {
   display: grid;
   grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
@@ -540,6 +544,12 @@ input[type="range"] {
 }
 
 .button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.button.is-disabled,
+.button[aria-disabled="true"] {
   opacity: 0.6;
   cursor: not-allowed;
 }

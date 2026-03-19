@@ -18,7 +18,7 @@ from app.config import (
     SAM2_SESSIONS_DIR,
 )
 from app.services.monitoring import tracked_task
-from app.services.storage import ensure_directory, ensure_storage, now_iso, write_json
+from app.services.storage import ensure_directory, ensure_storage, make_stable_asset_id, now_iso, read_json, write_json
 
 
 class Sam2Point(BaseModel):
@@ -173,11 +173,14 @@ def read_upload_image(upload: UploadFile) -> Image.Image:
         raise HTTPException(status_code=400, detail="Nao foi possivel abrir a imagem enviada.") from exc
 
 
-def create_sam2_session(image: UploadFile) -> dict:
+def create_sam2_session(image: UploadFile, request_id: str | None = None) -> dict:
     with tracked_task(
         kind="sam2_session",
         label="Criar sessao SAM 2",
-        metadata={"filename": image.filename or "imagem.png"},
+        metadata={
+            "filename": image.filename or "imagem.png",
+            "request_id": request_id,
+        },
     ) as task:
         ensure_storage()
         if not SAM2_RUNTIME.status()["available"]:
@@ -185,13 +188,19 @@ def create_sam2_session(image: UploadFile) -> dict:
             raise HTTPException(status_code=503, detail=status["reason"] or "SAM 2 indisponivel.")
 
         task.update(phase="Persistindo imagem da sessao")
-        session_id = f"sam2_{uuid4().hex[:12]}"
+        session_id = make_stable_asset_id("sam2", request_id) if request_id else f"sam2_{uuid4().hex[:12]}"
         paths = sam2_session_paths(session_id)
+        if request_id and paths["metadata"].exists() and paths["image"].exists():
+            existing_payload = read_json(paths["metadata"])
+            task.update(phase="Retornando sessao ja existente", metadata={"session_id": session_id})
+            return existing_payload
+
         ensure_directory(paths["base"])
         pil_image = read_upload_image(image)
         pil_image.save(paths["image"])
         payload = {
             "id": session_id,
+            "request_id": request_id,
             "created_at": now_iso(),
             "original_filename": image.filename or f"{session_id}.png",
             "width": pil_image.width,

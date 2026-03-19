@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useOutletContext } from "react-router-dom";
 import ImagePreviewFigure from "../components/ImagePreviewFigure";
 import { deleteInference, getInferences, getTraining, runInference, runTraining } from "../lib/api";
 
@@ -34,6 +35,11 @@ function buildTrainingProgressMessage(job, prefix = "Treino em background") {
 }
 
 export default function InferencePage() {
+  const backendStatus = useOutletContext();
+  const backendAvailable = backendStatus?.available !== false;
+  const backendStatusMessage =
+    backendStatus?.message
+    || "Backend indisponivel ou reiniciando. Aguarde a API voltar para retomar as acoes.";
   const [selectedFile, setSelectedFile] = useState(null);
   const [result, setResult] = useState(null);
   const [history, setHistory] = useState([]);
@@ -44,11 +50,15 @@ export default function InferencePage() {
   const isTrainingRunning = Boolean(trainingJob?.is_active);
 
   useEffect(() => {
+    if (!backendAvailable) {
+      setStatus({ kind: "error", message: backendStatusMessage });
+      return;
+    }
     loadPage();
-  }, []);
+  }, [backendAvailable, backendStatusMessage]);
 
   useEffect(() => {
-    if (!trainingJob?.is_active) {
+    if (!backendAvailable || !trainingJob?.is_active) {
       return undefined;
     }
 
@@ -102,7 +112,7 @@ export default function InferencePage() {
         window.clearTimeout(timer);
       }
     };
-  }, [trainingJob?.id, trainingJob?.status]);
+  }, [backendAvailable, trainingJob?.id, trainingJob?.status]);
 
   async function loadPage() {
     try {
@@ -121,6 +131,10 @@ export default function InferencePage() {
   }
 
   async function handleInference() {
+    if (!backendAvailable) {
+      setStatus({ kind: "error", message: backendStatusMessage });
+      return;
+    }
     if (!selectedFile || !training?.has_model || isTrainingRunning) return;
     setStatus({ kind: "loading", message: "Processando imagem e calculando percentuais..." });
     try {
@@ -137,6 +151,10 @@ export default function InferencePage() {
   }
 
   async function handleTrainFirst() {
+    if (!backendAvailable) {
+      setStatus({ kind: "error", message: backendStatusMessage });
+      return;
+    }
     setStatus({ kind: "loading", message: "Iniciando treino em background..." });
     try {
       const payload = await runTraining();
@@ -161,6 +179,10 @@ export default function InferencePage() {
   }
 
   async function handleDeleteInference(item) {
+    if (!backendAvailable) {
+      setStatus({ kind: "error", message: backendStatusMessage });
+      return;
+    }
     if (!window.confirm(`Excluir a inferencia ${item.original_filename}? A anotacao da galeria de treino sera mantida.`)) {
       return;
     }
@@ -228,7 +250,13 @@ export default function InferencePage() {
             type="button"
             className="button"
             onClick={handleInference}
-            disabled={!selectedFile || !training?.has_model || isTrainingRunning || status.kind === "loading"}
+            disabled={
+              !backendAvailable
+              || !selectedFile
+              || !training?.has_model
+              || isTrainingRunning
+              || status.kind === "loading"
+            }
           >
             Rodar inferencia
           </button>
@@ -236,7 +264,7 @@ export default function InferencePage() {
             type="button"
             className="button button--ghost"
             onClick={handleTrainFirst}
-            disabled={status.kind === "loading" || isTrainingRunning || Boolean(deletingId)}
+            disabled={!backendAvailable || status.kind === "loading" || isTrainingRunning || Boolean(deletingId)}
           >
             {isTrainingRunning ? "Treino em andamento..." : "Treinar agora"}
           </button>
@@ -325,7 +353,7 @@ export default function InferencePage() {
                         type="button"
                         className="button button--ghost button--danger button--small"
                         onClick={() => handleDeleteInference(item)}
-                        disabled={deletingId === item.id}
+                        disabled={!backendAvailable || deletingId === item.id}
                       >
                         {deletingId === item.id ? "Excluindo..." : "Excluir"}
                       </button>

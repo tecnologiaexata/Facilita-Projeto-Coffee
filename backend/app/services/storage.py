@@ -54,6 +54,16 @@ def make_asset_id(prefix: str = "sample") -> str:
     return f"{prefix}_{timestamp}_{uuid4().hex[:12]}"
 
 
+def normalize_request_id(request_id: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "-", request_id or "").strip("-").lower()
+    cleaned = re.sub(r"-{2,}", "-", cleaned)
+    return (cleaned or uuid4().hex[:12])[:80]
+
+
+def make_stable_asset_id(prefix: str, request_id: str) -> str:
+    return f"{prefix}_{normalize_request_id(request_id)}"
+
+
 def slugify_name(filename: str) -> str:
     stem = Path(filename).stem or "imagem"
     cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "-", stem).strip("-")

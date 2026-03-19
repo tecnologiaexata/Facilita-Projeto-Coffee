@@ -78,8 +78,14 @@ def create_annotation(
     original_image: UploadFile = File(...),
     mask_image: UploadFile = File(...),
     sample_id: str | None = Form(default=None),
+    request_id: str | None = Form(default=None),
 ) -> dict:
-    record = save_annotation(original_image, mask_image, sample_id=sample_id)
+    record = save_annotation(
+        original_image,
+        mask_image,
+        sample_id=sample_id,
+        request_id=request_id,
+    )
     return {"item": record}
 
 
@@ -148,8 +154,11 @@ def get_sam2_status() -> dict:
 
 
 @app.post("/api/sam2/sessions")
-def create_sam2_annotation_session(image: UploadFile = File(...)) -> dict:
-    return {"item": create_sam2_session(image)}
+def create_sam2_annotation_session(
+    image: UploadFile = File(...),
+    request_id: str | None = Form(default=None),
+) -> dict:
+    return {"item": create_sam2_session(image, request_id=request_id)}
 
 
 @app.post("/api/sam2/sessions/{session_id}/predict")
