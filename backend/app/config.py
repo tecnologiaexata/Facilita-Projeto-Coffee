@@ -1,12 +1,10 @@
-import os
 from pathlib import Path
 
 
 APP_DIR = Path(__file__).resolve().parent
 BACKEND_DIR = APP_DIR.parent
-PROJECT_DIR = BACKEND_DIR.parent
-DEFAULT_STORAGE_DIR = PROJECT_DIR / "storage"
-STORAGE_DIR = Path(os.getenv("FCC_STORAGE_DIR", DEFAULT_STORAGE_DIR))
+PROJECT_DIR = BACKEND_DIR.parent if BACKEND_DIR.name == "backend" else BACKEND_DIR
+STORAGE_DIR = PROJECT_DIR / "storage"
 URL_ROOT_DIR = STORAGE_DIR.parent
 
 
@@ -32,20 +30,6 @@ DATASET_SPLIT_DIR = STORAGE_DIR / "dataset"
 MODELS_DIR = STORAGE_DIR / "models"
 TRAINING_DIR = STORAGE_DIR / "training"
 INFERENCES_DIR = STORAGE_DIR / "inferences"
-SAM2_DIR = STORAGE_DIR / "sam2"
-SAM2_SESSIONS_DIR = SAM2_DIR / "sessions"
-SAM2_CHECKPOINTS_DIR = SAM2_DIR / "checkpoints"
-
-SAM2_ENABLED = os.getenv("FCC_SAM2_ENABLED", "0") == "1"
-SAM2_DEVICE = os.getenv("FCC_SAM2_DEVICE", "cpu")
-SAM2_CONFIG = os.getenv("FCC_SAM2_CONFIG", "configs/sam2.1/sam2.1_hiera_s.yaml")
-SAM2_CHECKPOINT_FILE = os.getenv("FCC_SAM2_CHECKPOINT_FILE", "sam2.1_hiera_small.pt")
-SAM2_CHECKPOINT = Path(
-    os.getenv(
-        "FCC_SAM2_CHECKPOINT",
-        str(SAM2_CHECKPOINTS_DIR / SAM2_CHECKPOINT_FILE),
-    )
-)
 
 
 REQUIRED_DIRS = [
@@ -63,7 +47,4 @@ REQUIRED_DIRS = [
     MODELS_DIR,
     TRAINING_DIR,
     INFERENCES_DIR,
-    SAM2_DIR,
-    SAM2_SESSIONS_DIR,
-    SAM2_CHECKPOINTS_DIR,
 ]

@@ -10,7 +10,6 @@ from uuid import uuid4
 
 import psutil
 
-from app.config import SAM2_DEVICE
 from app.services.storage import now_iso
 
 
@@ -60,7 +59,6 @@ class MonitoringRegistry:
         self._process = psutil.Process(os.getpid())
         self._hostname = socket.gethostname()
         self._cpu_count = psutil.cpu_count() or 1
-        self._gpu_monitoring_enabled = not SAM2_DEVICE.lower().startswith("cpu")
         psutil.cpu_percent(interval=None)
         self._process.cpu_percent(interval=None)
 
@@ -160,11 +158,6 @@ class MonitoringRegistry:
         }
 
     def _gpu_snapshot(self) -> dict:
-        if not self._gpu_monitoring_enabled:
-            return {
-                "available": False,
-                "reason": "Monitoramento de GPU desativado quando o ambiente esta configurado para CPU.",
-            }
         try:
             response = subprocess.run(
                 [
