@@ -101,48 +101,25 @@ export function getMeta() {
   return request("/api/meta");
 }
 
-export function getHealth(options = {}) {
-  return request("/api/health", options);
+export function getGallery(params = {}) {
+  return request(withQuery("/api/gallery", params));
 }
 
-export function getMonitoring() {
-  return request("/api/monitoring");
-}
-
-export function getSam2Status() {
-  return request("/api/sam2/status");
-}
-
-export function getAnnotations(params = {}) {
-  return request(withQuery("/api/annotations", params));
-}
-
-export function getAnnotation(sampleId) {
-  return request(`/api/annotations/${sampleId}`);
-}
-
-export function saveAnnotation(originalImage, maskBlob, sampleId = "", requestId = "") {
+export function uploadGalleryItem(imageFile, annotationFile, requestId = "") {
   const formData = new FormData();
-  formData.append("original_image", originalImage);
-  formData.append("mask_image", maskBlob, "mask.png");
-  if (sampleId) {
-    formData.append("sample_id", sampleId);
-  }
+  formData.append("image", imageFile);
+  formData.append("annotation_txt", annotationFile);
   if (requestId) {
     formData.append("request_id", requestId);
   }
-  return request("/api/annotations", {
+  return request("/api/gallery", {
     method: "POST",
     body: formData,
-    retry: {
-      safeToRetry: Boolean(sampleId || requestId),
-      attempts: sampleId || requestId ? 3 : 1,
-    },
   });
 }
 
-export function deleteAnnotation(sampleId) {
-  return request(`/api/annotations/${sampleId}`, {
+export function deleteGalleryItem(sampleId) {
+  return request(`/api/gallery/${sampleId}`, {
     method: "DELETE",
   });
 }
@@ -152,10 +129,6 @@ export function runTraining() {
     method: "POST",
     retry: { safeToRetry: true, attempts: 2 },
   });
-}
-
-export function getTraining() {
-  return request("/api/training");
 }
 
 export function runInference(imageFile) {
@@ -174,35 +147,5 @@ export function getInferences() {
 export function deleteInference(runId) {
   return request(`/api/inferences/${runId}`, {
     method: "DELETE",
-  });
-}
-
-export function createSam2Session(imageFile, requestId = "") {
-  const formData = new FormData();
-  formData.append("image", imageFile);
-  if (requestId) {
-    formData.append("request_id", requestId);
-  }
-  return request("/api/sam2/sessions", {
-    method: "POST",
-    body: formData,
-    retry: {
-      safeToRetry: Boolean(requestId),
-      attempts: requestId ? 3 : 1,
-    },
-  });
-}
-
-export function predictSam2Mask(sessionId, payload) {
-  return request(`/api/sam2/sessions/${sessionId}/predict`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-    retry: {
-      safeToRetry: true,
-      attempts: 3,
-    },
   });
 }

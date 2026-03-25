@@ -19,7 +19,6 @@ from app.services.annotation import (
     build_overlay,
     compute_coffee_metrics,
     compute_pixel_distribution,
-    persist_annotation_record,
 )
 from app.services.monitoring import list_active_tasks, list_recent_tasks, tracked_task
 from app.services.storage import (
@@ -257,7 +256,7 @@ def train_latest_model() -> dict:
         if len(records) < 2:
             raise HTTPException(
                 status_code=400,
-                detail="Anote pelo menos 2 imagens antes de treinar o modelo do MVP.",
+                detail="Envie pelo menos 2 itens para a galeria antes de treinar o modelo.",
             )
 
         task.update(phase="Organizando dataset", metadata={"annotation_count": len(records)})
@@ -327,15 +326,10 @@ def ensure_model_ready() -> LoadedModel:
     model = load_latest_model()
     if model is not None:
         return model
-    if list_annotation_records():
-        train_latest_model()
-        model = load_latest_model()
-    if model is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Ainda nao existe modelo treinado. Anote imagens e rode o treino primeiro.",
-        )
-    return model
+    raise HTTPException(
+        status_code=400,
+        detail="Ainda nao existe modelo treinado. Rode o treino antes de analisar novas imagens.",
+    )
 
 
 def calculate_inference_payload(class_mask: np.ndarray) -> dict:
@@ -384,17 +378,6 @@ def run_inference(image_file: UploadFile) -> dict:
         Image.fromarray(overlay).save(bundle["overlay"])
 
         metrics = calculate_inference_payload(prediction)
-        task.update(phase="Enviando resultado para galeria", metadata={"run_id": run_id})
-        training_annotation = persist_annotation_record(
-            source,
-            prediction,
-            original_filename=image_file.filename or "imagem.png",
-            extra_payload={
-                "source_type": "inference",
-                "related_inference_id": run_id,
-                "trained_at": model.trained_at,
-            },
-        )
         payload = {
             "id": run_id,
             "storage_key": run_id,
@@ -403,8 +386,6 @@ def run_inference(image_file: UploadFile) -> dict:
             "trained_at": model.trained_at,
             "width": source.width,
             "height": source.height,
-            "training_annotation": training_annotation,
-            "training_annotation_id": training_annotation["id"],
             **metrics,
         }
         write_json(bundle["metadata"], payload)
@@ -434,14 +415,11 @@ def delete_inference(run_id: str) -> dict:
         payload = read_json(metadata_path)
         task.update(
             phase="Removendo arquivos da inferencia",
-            metadata={"training_annotation_id": payload.get("training_annotation_id")},
+            metadata={"trained_at": payload.get("trained_at")},
         )
         shutil.rmtree(bundle["base"], ignore_errors=True)
         task.update(phase="Concluido")
-        return {
-            **payload,
-            "gallery_annotation_preserved": bool(payload.get("training_annotation_id")),
-        }
+        return payload
 
 
 def build_model_download_filename(trained_at: str | None = None) -> str:

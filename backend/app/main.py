@@ -4,7 +4,6 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import STORAGE_DIR
-from app.services.monitoring import monitoring_snapshot
 from app.services.annotation import (
     annotations_summary,
     build_annotation_package,
@@ -19,7 +18,6 @@ from app.services.modeling import (
     start_training_job,
     training_status,
 )
-from app.services.sam2 import Sam2PredictRequest, create_sam2_session, predict_for_session, sam2_status
 from app.services.storage import (
     class_catalog,
     count_annotation_records,
@@ -54,15 +52,10 @@ def meta() -> dict:
         "classes": class_catalog(),
         "summary": annotations_summary(),
         "training": training_status(),
-        "sam2": sam2_status(),
     }
 
 
-@app.get("/api/annotations")
-def get_annotations(
-    offset: int = Query(default=0, ge=0),
-    limit: int | None = Query(default=None, ge=1),
-) -> dict:
+def _gallery_payload(offset: int = 0, limit: int | None = None) -> dict:
     total = count_annotation_records()
     records = list_annotation_records(offset=offset, limit=limit)
     return {
@@ -73,19 +66,59 @@ def get_annotations(
     }
 
 
+@app.get("/api/gallery")
+def get_gallery(
+    offset: int = Query(default=0, ge=0),
+    limit: int | None = Query(default=None, ge=1),
+) -> dict:
+    return _gallery_payload(offset=offset, limit=limit)
+
+
+@app.get("/api/annotations")
+def get_annotations(
+    offset: int = Query(default=0, ge=0),
+    limit: int | None = Query(default=None, ge=1),
+) -> dict:
+    return _gallery_payload(offset=offset, limit=limit)
+
+
+@app.post("/api/gallery")
+def create_gallery_item(
+    image: UploadFile = File(...),
+    annotation_txt: UploadFile = File(...),
+    request_id: str | None = Form(default=None),
+) -> dict:
+    record = save_annotation(
+        image,
+        annotation_file=annotation_txt,
+        request_id=request_id,
+    )
+    return {"item": record}
+
+
 @app.post("/api/annotations")
 def create_annotation(
     original_image: UploadFile = File(...),
-    mask_image: UploadFile = File(...),
+    mask_image: UploadFile | None = File(default=None),
+    annotation_txt: UploadFile | None = File(default=None),
     sample_id: str | None = Form(default=None),
     request_id: str | None = Form(default=None),
 ) -> dict:
     record = save_annotation(
         original_image,
-        mask_image,
+        mask_file=mask_image,
+        annotation_file=annotation_txt,
         sample_id=sample_id,
         request_id=request_id,
     )
+    return {"item": record}
+
+
+@app.get("/api/gallery/{sample_id}")
+def get_gallery_item(sample_id: str) -> dict:
+    record = load_annotation_record(sample_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Item da galeria nao encontrado.")
     return {"item": record}
 
 
@@ -93,13 +126,25 @@ def create_annotation(
 def get_annotation(sample_id: str) -> dict:
     record = load_annotation_record(sample_id)
     if record is None:
-        raise HTTPException(status_code=404, detail="Anotacao nao encontrada.")
+        raise HTTPException(status_code=404, detail="Item da galeria nao encontrado.")
     return {"item": record}
+
+
+@app.delete("/api/gallery/{sample_id}")
+def remove_gallery_item(sample_id: str) -> dict:
+    return {"item": delete_annotation(sample_id)}
 
 
 @app.delete("/api/annotations/{sample_id}")
 def remove_annotation(sample_id: str) -> dict:
     return {"item": delete_annotation(sample_id)}
+
+
+@app.get("/api/gallery/{sample_id}/package")
+def download_gallery_package(sample_id: str) -> StreamingResponse:
+    buffer, filename = build_annotation_package(sample_id)
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(buffer, media_type="application/zip", headers=headers)
 
 
 @app.get("/api/annotations/{sample_id}/package")
@@ -146,26 +191,3 @@ def download_training_model() -> FileResponse:
 @app.post("/api/inference")
 def create_inference(image: UploadFile = File(...)) -> dict:
     return {"item": run_inference(image)}
-
-
-@app.get("/api/sam2/status")
-def get_sam2_status() -> dict:
-    return sam2_status()
-
-
-@app.post("/api/sam2/sessions")
-def create_sam2_annotation_session(
-    image: UploadFile = File(...),
-    request_id: str | None = Form(default=None),
-) -> dict:
-    return {"item": create_sam2_session(image, request_id=request_id)}
-
-
-@app.post("/api/sam2/sessions/{session_id}/predict")
-def create_sam2_prediction(session_id: str, payload: Sam2PredictRequest) -> dict:
-    return {"item": predict_for_session(session_id, payload)}
-
-
-@app.get("/api/monitoring")
-def get_monitoring() -> dict:
-    return monitoring_snapshot()

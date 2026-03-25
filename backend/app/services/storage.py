@@ -16,6 +16,7 @@ from app.config import (
     ANNOTATION_METADATA_DIR,
     ANNOTATION_OVERLAYS_DIR,
     ANNOTATION_OVERLAY_PREVIEWS_DIR,
+    ANNOTATION_TEXTS_DIR,
     CLASS_MAP,
     CVAT_DIR,
     DATASET_SPLIT_DIR,
@@ -88,6 +89,7 @@ def annotation_bundle(sample_id: str) -> dict[str, Path]:
         "overlay": ANNOTATION_OVERLAYS_DIR / f"{sample_id}.png",
         "overlay_preview": ANNOTATION_OVERLAY_PREVIEWS_DIR / f"{sample_id}.jpg",
         "metadata": ANNOTATION_METADATA_DIR / f"{sample_id}.json",
+        "annotation_txt": ANNOTATION_TEXTS_DIR / f"{sample_id}.txt",
         "cvat": CVAT_DIR / f"{sample_id}.xml",
     }
 
@@ -135,6 +137,7 @@ def serialize_annotation_record(payload: dict) -> dict:
     bundle = annotation_bundle(sample_id)
     image_preview_path = ensure_preview_image(bundle["image"], bundle["image_preview"])
     overlay_preview_path = ensure_preview_image(bundle["overlay"], bundle["overlay_preview"])
+    annotation_txt_path = bundle["annotation_txt"]
     return {
         **payload,
         "image_url": storage_url(bundle["image"]),
@@ -143,6 +146,7 @@ def serialize_annotation_record(payload: dict) -> dict:
         "color_mask_url": storage_url(bundle["color_mask"]),
         "overlay_url": storage_url(bundle["overlay"]),
         "overlay_preview_url": storage_url(overlay_preview_path),
+        "annotation_txt_url": storage_url(annotation_txt_path) if annotation_txt_path.exists() else None,
         "cvat_url": storage_url(bundle["cvat"]),
         "package_url": f"/api/annotations/{sample_id}/package",
     }
