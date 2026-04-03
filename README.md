@@ -67,3 +67,59 @@ Use `venv` por padrao. Rodar fora dela pode misturar `numpy/scipy/sklearn` do si
 3. O worker envia heartbeat e faz polling da fila.
 4. O worker busca o `context` do job, baixa o necessario, processa e sobe os resultados no Blob.
 5. O worker reporta o resultado final para o frontend.
+
+## Operacao automatizada na Vast.ai
+
+Agora o repositorio tem scripts para preparar e subir o worker automaticamente lendo o `.env` na raiz do projeto.
+
+Arquivos principais:
+
+- [workerctl.sh](/home/renatoolegrio/Documentos/GitHub/facilita-Projeto-Coffee/scripts/workerctl.sh)
+- [vast_onstart.sh](/home/renatoolegrio/Documentos/GitHub/facilita-Projeto-Coffee/scripts/vast_onstart.sh)
+- [onstart.sh](/home/renatoolegrio/Documentos/GitHub/facilita-Projeto-Coffee/onstart.sh)
+
+Comandos uteis:
+
+```bash
+bash scripts/workerctl.sh bootstrap
+bash scripts/workerctl.sh start
+bash scripts/workerctl.sh stop
+bash scripts/workerctl.sh restart
+bash scripts/workerctl.sh status
+bash scripts/workerctl.sh health
+bash scripts/workerctl.sh logs
+```
+
+O `workerctl.sh`:
+
+- le o `.env` automaticamente
+- cria `.venv` se ainda nao existir
+- instala dependencias apenas quando `backend/requirements.txt` mudar
+- sobe o worker em background
+- grava logs em `logs/worker.log`
+- guarda o pid em `run/worker.pid`
+
+### Auto-start quando a instancia ligar de novo
+
+Na Vast.ai, o caminho recomendado e configurar o comando de `On-start script` da instancia para apontar para:
+
+```bash
+bash /workspace/facilita-Projeto-Coffee/onstart.sh
+```
+
+Se o repositorio estiver em outro diretorio, ajuste o caminho. O `onstart.sh` chama `scripts/vast_onstart.sh`, que por sua vez usa `workerctl.sh start`.
+
+Assim, quando a instancia voltar a ligar, o worker sobe automaticamente de novo com o `.env` ja presente na pasta do projeto.
+
+### O que voce precisa deixar pronto na instancia
+
+- o repositorio clonado
+- o `.env` na raiz do projeto
+- a porta do worker exposta na Vast.ai, por exemplo `8050`
+- `WORKER_PUBLIC_URL` apontando para o IP publico e porta da instancia
+
+Exemplo:
+
+```env
+WORKER_PUBLIC_URL=http://SEU_IP_PUBLICO:8050
+```
