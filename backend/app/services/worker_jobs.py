@@ -62,6 +62,23 @@ def _asset_reference(source: dict | None) -> str | None:
     return source.get("download_url") or source.get("url") or source.get("pathname")
 
 
+def _asset_expected_size(source: dict | None) -> int | None:
+    if not isinstance(source, dict):
+        return None
+
+    value = source.get("size")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _report_progress(report_progress, stage: str, detail: str | None = None, **details) -> None:
+    if callable(report_progress):
+        report_progress(stage, detail, details=details or None)
+
+
 def _load_oriented_image(raw: bytes, *, convert_mode: str, reference: str, filename: str) -> Image.Image:
     image = Image.open(BytesIO(raw))
     original_size = image.size
@@ -82,7 +99,11 @@ def _read_image_source(source, *, fallback_filename: str, convert_mode: str = "R
         reference = _asset_reference(source)
         if reference:
             logger.info("Baixando imagem do Blob: reference=%s", reference)
-            raw = download_blob_bytes(reference, access=source.get("access") or blob_access())
+            raw = download_blob_bytes(
+                reference,
+                access=source.get("access") or blob_access(),
+                expected_size=_asset_expected_size(source),
+            )
             filename = source.get("filename") or source.get("original_filename")
             if not filename:
                 filename = guess_filename_from_reference(reference, fallback_filename)
@@ -123,7 +144,11 @@ def _read_text_source(source, *, fallback_filename: str) -> tuple[str, str]:
         reference = _asset_reference(source)
         if reference:
             logger.info("Baixando anotacao TXT do Blob: reference=%s", reference)
-            raw = download_blob_bytes(reference, access=source.get("access") or blob_access())
+            raw = download_blob_bytes(
+                reference,
+                access=source.get("access") or blob_access(),
+                expected_size=_asset_expected_size(source),
+            )
             for encoding in ("utf-8-sig", "utf-8", "latin-1"):
                 try:
                     content = raw.decode(encoding)
@@ -270,7 +295,7 @@ def _build_annotation_result(
     return item
 
 
-def _process_gallery_import(payload: dict, context: dict) -> dict:
+def _process_gallery_import(payload: dict, context: dict, report_progress=None) -> dict:
     image_source = _payload_value(payload, "image_url", "imageUrl")
     annotation_txt_source = _payload_value(payload, "annotation_txt_url", "annotationTxtUrl")
     mask_image_source = _payload_value(payload, "mask_image_url", "maskImageUrl")
@@ -292,6 +317,13 @@ def _process_gallery_import(payload: dict, context: dict) -> dict:
         _source_reference_label(mask_image_source),
     )
 
+    _report_progress(
+        report_progress,
+        "loading_gallery_image",
+        "Carregando imagem principal da amostra.",
+        sample_id=sample_id,
+        output_prefix=output_prefix,
+    )
     source_image, original_filename = _read_image_source(
         image_source,
         fallback_filename="imagem-remota.png",
@@ -299,7 +331,19 @@ def _process_gallery_import(payload: dict, context: dict) -> dict:
     )
 
     if annotation_txt_source:
+        _report_progress(
+            report_progress,
+            "loading_annotation",
+            "Baixando arquivo TXT da anotacao.",
+            sample_id=sample_id,
+        )
         annotation_text, _ = _read_text_source(annotation_txt_source, fallback_filename="annotation.txt")
+        _report_progress(
+            report_progress,
+            "building_mask",
+            "Convertendo TXT para mascara da amostra.",
+            sample_id=sample_id,
+        )
         class_mask, annotation_meta = build_class_mask_from_txt(
             annotation_text,
             source_image.width,
@@ -310,6 +354,12 @@ def _process_gallery_import(payload: dict, context: dict) -> dict:
             sample_id,
             (annotation_meta or {}).get("annotation_classes"),
             (annotation_meta or {}).get("annotation_shape_count"),
+        )
+        _report_progress(
+            report_progress,
+            "uploading_annotation_artifacts",
+            "Enviando artefatos normalizados da amostra para o Blob.",
+            sample_id=sample_id,
         )
         return {
             "item": _build_annotation_result(
@@ -330,6 +380,12 @@ def _process_gallery_import(payload: dict, context: dict) -> dict:
             )
         }
 
+    _report_progress(
+        report_progress,
+        "loading_annotation",
+        "Baixando mascara da amostra.",
+        sample_id=sample_id,
+    )
     mask_image, _ = _read_image_source(mask_image_source, fallback_filename="mask.png", convert_mode="RGB")
     if mask_image.size != source_image.size:
         logger.info(
@@ -339,8 +395,20 @@ def _process_gallery_import(payload: dict, context: dict) -> dict:
             source_image.size,
         )
         mask_image = mask_image.resize(source_image.size, Image.Resampling.NEAREST)
+    _report_progress(
+        report_progress,
+        "building_mask",
+        "Decodificando mascara enviada.",
+        sample_id=sample_id,
+    )
     class_mask = decode_mask(mask_image)
     logger.info("Mascara recebida e decodificada: sample_id=%s", sample_id)
+    _report_progress(
+        report_progress,
+        "uploading_annotation_artifacts",
+        "Enviando artefatos normalizados da amostra para o Blob.",
+        sample_id=sample_id,
+    )
     return {
         "item": _build_annotation_result(
             source_image=source_image,
@@ -366,21 +434,35 @@ def _process_gallery_import(payload: dict, context: dict) -> dict:
     }
 
 
-def _load_training_sample_arrays(sample: dict) -> dict:
+def _load_training_sample_arrays(sample: dict, *, report_progress=None, sample_index: int | None = None, sample_count: int | None = None) -> dict:
     assets = sample.get("assets") or {}
     image_asset = assets.get("image")
     mask_asset = assets.get("mask")
     if not image_asset or not mask_asset:
         raise HTTPException(status_code=400, detail=f"A amostra {sample.get('id')} nao possui assets completos.")
 
+    progress_prefix = ""
+    if sample_index is not None and sample_count is not None:
+        progress_prefix = f"Amostra {sample_index}/{sample_count}: "
+
+    _report_progress(
+        report_progress,
+        "loading_samples",
+        f"{progress_prefix}baixando assets da amostra {sample.get('id')}.",
+        sample_id=sample.get("id"),
+        sample_index=sample_index,
+        sample_count=sample_count,
+    )
     logger.info("Carregando amostra para treino: sample_id=%s", sample.get("id"))
     image_bytes = download_blob_bytes(
         _asset_reference(image_asset),
         access=image_asset.get("access") or blob_access(),
+        expected_size=_asset_expected_size(image_asset),
     )
     mask_bytes = download_blob_bytes(
         _asset_reference(mask_asset),
         access=mask_asset.get("access") or blob_access(),
+        expected_size=_asset_expected_size(mask_asset),
     )
     image_rgb = np.array(Image.open(BytesIO(image_bytes)).convert("RGB"))
     mask = np.array(Image.open(BytesIO(mask_bytes)).convert("L"))
@@ -389,6 +471,16 @@ def _load_training_sample_arrays(sample: dict) -> dict:
         sample.get("id"),
         image_rgb.shape,
         mask.shape,
+    )
+    _report_progress(
+        report_progress,
+        "loading_samples",
+        f"{progress_prefix}amostra {sample.get('id')} carregada para treino.",
+        sample_id=sample.get("id"),
+        sample_index=sample_index,
+        sample_count=sample_count,
+        image_shape=list(image_rgb.shape),
+        mask_shape=list(mask.shape),
     )
     return {
         "id": sample.get("id"),
@@ -423,7 +515,7 @@ def _evaluate_classifier_on_loaded_samples(
     return compute_metrics(np.concatenate(all_true), np.concatenate(all_pred))
 
 
-def _process_training(context: dict) -> dict:
+def _process_training(context: dict, report_progress=None) -> dict:
     dataset = context.get("dataset") or {}
     raw_samples = dataset.get("samples") or []
     if len(raw_samples) < 2:
@@ -442,7 +534,22 @@ def _process_training(context: dict) -> dict:
         output_prefix,
     )
 
-    loaded_samples = [_load_training_sample_arrays(sample) for sample in raw_samples]
+    _report_progress(
+        report_progress,
+        "loading_samples",
+        f"Carregando {len(raw_samples)} amostras para o treino.",
+        training_run_id=training_run_id,
+        sample_count=len(raw_samples),
+    )
+    loaded_samples = [
+        _load_training_sample_arrays(
+            sample,
+            report_progress=report_progress,
+            sample_index=index,
+            sample_count=len(raw_samples),
+        )
+        for index, sample in enumerate(raw_samples, start=1)
+    ]
     split_map = build_split_map(
         [{"id": sample["id"], "created_at": sample["created_at"]} for sample in loaded_samples]
     )
@@ -457,9 +564,25 @@ def _process_training(context: dict) -> dict:
         len(val_records),
         len(test_records),
     )
+    _report_progress(
+        report_progress,
+        "splitting_dataset",
+        "Split de treino definido com sucesso.",
+        training_run_id=training_run_id,
+        train_count=len(train_records),
+        val_count=len(val_records),
+        test_count=len(test_records),
+    )
 
     feature_batches = []
     label_batches = []
+    _report_progress(
+        report_progress,
+        "sampling_pixels",
+        f"Amostrando pixels de {len(train_records)} amostras de treino.",
+        training_run_id=training_run_id,
+        train_count=len(train_records),
+    )
     for sample in train_records:
         features, labels = sample_training_pixels(sample["image_rgb"], sample["mask"])
         feature_batches.append(features)
@@ -471,6 +594,16 @@ def _process_training(context: dict) -> dict:
             features.shape,
             labels.shape,
         )
+        _report_progress(
+            report_progress,
+            "sampling_pixels",
+            f"Pixels amostrados da amostra {sample['id']}.",
+            training_run_id=training_run_id,
+            sample_id=sample["id"],
+            feature_rows=int(features.shape[0]),
+            feature_cols=int(features.shape[1]),
+            label_count=int(labels.shape[0]),
+        )
 
     train_x = np.vstack(feature_batches)
     train_y = np.concatenate(label_batches)
@@ -479,6 +612,14 @@ def _process_training(context: dict) -> dict:
         training_run_id,
         train_x.shape,
         train_y.shape,
+    )
+    _report_progress(
+        report_progress,
+        "training_model",
+        "Treinando RandomForestClassifier.",
+        training_run_id=training_run_id,
+        train_rows=int(train_x.shape[0]),
+        train_features=int(train_x.shape[1]),
     )
 
     classifier = RandomForestClassifier(
@@ -491,6 +632,12 @@ def _process_training(context: dict) -> dict:
     logger.info("Treinando RandomForestClassifier: training_run_id=%s", training_run_id)
     classifier.fit(train_x, train_y)
     logger.info("Treinamento concluido: training_run_id=%s", training_run_id)
+    _report_progress(
+        report_progress,
+        "evaluating_model",
+        "Treinamento concluido; calculando metricas.",
+        training_run_id=training_run_id,
+    )
 
     trained_at = now_iso()
     model_buffer = BytesIO()
@@ -519,6 +666,12 @@ def _process_training(context: dict) -> dict:
             "rng_seed_hint": 42,
         },
     }
+    _report_progress(
+        report_progress,
+        "uploading_training_artifacts",
+        "Enviando artefatos do treino para o Blob.",
+        training_run_id=training_run_id,
+    )
     item["assets"]["report_json"] = upload_json_blob(f"{output_prefix}/report.json", item)
     logger.info(
         "Artefatos de treino enviados ao Blob: training_run_id=%s assets=%s",
@@ -540,13 +693,30 @@ def _load_model_from_context(context: dict):
     model_bytes = download_blob_bytes(
         _asset_reference(model_asset),
         access=model_asset.get("access") or blob_access(),
+        expected_size=_asset_expected_size(model_asset),
     )
-    payload = joblib.load(BytesIO(model_bytes))
+    try:
+        payload = joblib.load(BytesIO(model_bytes))
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception(
+            "Falha ao carregar modelo do Blob: model_id=%s reference=%s expected_size=%s actual_bytes=%s",
+            model.get("id"),
+            _asset_reference(model_asset),
+            _asset_expected_size(model_asset),
+            len(model_bytes),
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Nao foi possivel carregar o modelo ativo. "
+                "O arquivo do modelo no Blob parece incompleto ou corrompido."
+            ),
+        ) from exc
     logger.info("Modelo carregado para inferencia: model_id=%s trained_at=%s", model.get("id"), payload["trained_at"])
     return payload["classifier"], payload["trained_at"], model.get("id")
 
 
-def _process_inference(payload: dict, context: dict) -> dict:
+def _process_inference(payload: dict, context: dict, report_progress=None) -> dict:
     image_source = _payload_value(payload, "image_url", "imageUrl")
     if not image_source:
         raise HTTPException(status_code=400, detail="Job de inferencia precisa de image_url.")
@@ -561,13 +731,34 @@ def _process_inference(payload: dict, context: dict) -> dict:
         output_prefix,
     )
 
+    _report_progress(
+        report_progress,
+        "loading_model",
+        "Baixando modelo ativo para executar a inferencia.",
+        inference_run_id=inference_run_id,
+    )
     classifier, trained_at, training_run_id = _load_model_from_context(context)
+    _report_progress(
+        report_progress,
+        "loading_input",
+        "Carregando imagem de entrada para inferencia.",
+        inference_run_id=inference_run_id,
+        training_run_id=training_run_id,
+    )
     source_image, original_filename = _read_image_source(
         image_source,
         fallback_filename="imagem-remota.png",
         convert_mode="RGB",
     )
     image_rgb = np.array(source_image)
+    _report_progress(
+        report_progress,
+        "predicting",
+        "Executando predicao da inferencia.",
+        inference_run_id=inference_run_id,
+        training_run_id=training_run_id,
+        image_shape=list(image_rgb.shape),
+    )
     prediction = classifier.predict(build_features(image_rgb)).reshape(image_rgb.shape[:2]).astype(np.uint8)
     logger.info(
         "Inferencia calculada: inference_run_id=%s image_shape=%s model_id=%s",
@@ -617,6 +808,13 @@ def _process_inference(payload: dict, context: dict) -> dict:
             "blob_access": blob_access(),
         },
     }
+    _report_progress(
+        report_progress,
+        "uploading_inference_artifacts",
+        "Enviando artefatos da inferencia para o Blob.",
+        inference_run_id=inference_run_id,
+        training_run_id=training_run_id,
+    )
     item["assets"]["result_json"] = upload_json_blob(f"{output_prefix}/result.json", item)
     logger.info(
         "Artefatos de inferencia enviados ao Blob: inference_run_id=%s assets=%s",
@@ -626,7 +824,7 @@ def _process_inference(payload: dict, context: dict) -> dict:
     return {"item": item}
 
 
-def process_control_plane_job(job: dict, context: dict | None = None) -> dict:
+def process_control_plane_job(job: dict, context: dict | None = None, report_progress=None) -> dict:
     kind = str(job.get("kind") or "").strip()
     payload = job.get("requestPayload") or job.get("request_payload") or {}
     if not isinstance(payload, dict):
@@ -641,12 +839,12 @@ def process_control_plane_job(job: dict, context: dict | None = None) -> dict:
     )
 
     if kind == "gallery_import":
-        return _process_gallery_import(payload, context)
+        return _process_gallery_import(payload, context, report_progress=report_progress)
 
     if kind == "inference":
-        return _process_inference(payload, context)
+        return _process_inference(payload, context, report_progress=report_progress)
 
     if kind == "training":
-        return _process_training(context)
+        return _process_training(context, report_progress=report_progress)
 
     raise HTTPException(status_code=400, detail=f"Tipo de job nao suportado: {kind or 'desconhecido'}.")

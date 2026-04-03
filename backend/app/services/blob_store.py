@@ -1,5 +1,6 @@
 import json
 import mimetypes
+import time
 from io import BytesIO
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -14,6 +15,8 @@ from app.logging_utils import get_logger
 
 logger = get_logger("facilita.worker.blob")
 HTTP_CHUNK_SIZE = 1024 * 1024
+BLOB_DOWNLOAD_ATTEMPTS = 3
+BLOB_DOWNLOAD_RETRY_DELAY_SECONDS = 0.5
 
 
 def blob_storage_enabled() -> bool:
@@ -93,11 +96,31 @@ def _download_http_bytes(url: str) -> bytes:
     return payload
 
 
-def download_blob_bytes(url_or_path: str, *, access: str | None = None) -> bytes:
-    logger.info("Baixando arquivo do Blob: reference=%s access=%s", url_or_path, access or blob_access())
+def _validate_blob_payload_size(reference: str, payload: bytes, expected_size: int | None) -> None:
+    if expected_size is None:
+        return
+
+    if len(payload) != expected_size:
+        logger.warning(
+            "Blob baixado com tamanho diferente do esperado: reference=%s expected=%s actual=%s",
+            reference,
+            expected_size,
+            len(payload),
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "O Blob foi baixado com tamanho diferente do esperado. "
+                "O arquivo pode estar incompleto ou houve falha de rede durante a leitura."
+            ),
+        )
+
+
+def _download_blob_once(url_or_path: str, *, access: str | None = None, expected_size: int | None = None) -> bytes:
     parsed = urlparse(url_or_path)
     if parsed.scheme in {"http", "https"}:
         payload = _download_http_bytes(url_or_path)
+        _validate_blob_payload_size(url_or_path, payload, expected_size)
         logger.info("Arquivo baixado do Blob por URL direta: reference=%s bytes=%s", url_or_path, len(payload))
         return payload
 
@@ -109,8 +132,42 @@ def download_blob_bytes(url_or_path: str, *, access: str | None = None) -> bytes
         logger.error("Falha ao baixar arquivo do Blob: reference=%s", url_or_path)
         raise HTTPException(status_code=404, detail="Blob solicitado nao foi encontrado.")
     payload = _stream_to_bytes(result.stream)
+    _validate_blob_payload_size(url_or_path, payload, expected_size)
     logger.info("Arquivo baixado do Blob com sucesso: reference=%s bytes=%s", url_or_path, len(payload))
     return payload
+
+
+def download_blob_bytes(url_or_path: str, *, access: str | None = None, expected_size: int | None = None) -> bytes:
+    logger.info(
+        "Baixando arquivo do Blob: reference=%s access=%s expected_size=%s",
+        url_or_path,
+        access or blob_access(),
+        expected_size,
+    )
+
+    last_error = None
+    for attempt in range(1, BLOB_DOWNLOAD_ATTEMPTS + 1):
+        try:
+            return _download_blob_once(url_or_path, access=access, expected_size=expected_size)
+        except HTTPException as exc:
+            last_error = exc
+            should_retry = exc.status_code >= 500 and attempt < BLOB_DOWNLOAD_ATTEMPTS
+            if should_retry:
+                logger.warning(
+                    "Tentativa %s/%s falhou ao baixar Blob; tentando novamente: reference=%s detail=%s",
+                    attempt,
+                    BLOB_DOWNLOAD_ATTEMPTS,
+                    url_or_path,
+                    exc.detail,
+                )
+                time.sleep(BLOB_DOWNLOAD_RETRY_DELAY_SECONDS)
+                continue
+            raise
+
+    if last_error is not None:
+        raise last_error
+
+    raise HTTPException(status_code=500, detail="Falha inesperada ao baixar Blob.")
 
 
 def _normalize_uploaded_blob(uploaded, *, size: int | None = None, access: str | None = None) -> dict:

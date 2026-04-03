@@ -1,6 +1,8 @@
 import json
 import socket
 import time
+from uuid import uuid4
+from datetime import datetime, timezone
 from threading import Event, Lock, Thread
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urljoin
@@ -18,6 +20,7 @@ from app.config import (
     WORKER_ID,
     WORKER_JOB_POLL_ENABLED,
     WORKER_JOB_POLL_INTERVAL_SECONDS,
+    WORKER_JOB_STUCK_AFTER_SECONDS,
     WORKER_LABEL,
     WORKER_MAX_CONCURRENT_JOBS,
     WORKER_PUBLIC_URL,
@@ -35,6 +38,10 @@ STOP_EVENT = Event()
 CONTROL_PLANE_THREAD: Thread | None = None
 ACTIVE_JOB_IDS: set[str] = set()
 ACTIVE_JOB_THREADS: dict[str, Thread] = {}
+ACTIVE_JOB_DETAILS: dict[str, dict] = {}
+STUCK_WARNING_JOB_IDS: set[str] = set()
+WORKER_RUNTIME_ID = str(uuid4())
+WORKER_PROCESS_STARTED_AT = now_iso()
 RUNTIME_STATE = {
     "enabled": False,
     "registered": False,
@@ -47,6 +54,8 @@ RUNTIME_STATE = {
     "last_job_id": None,
     "active_jobs": [],
     "active_job_count": 0,
+    "active_job_details": [],
+    "has_stuck_jobs": False,
 }
 
 
@@ -64,6 +73,9 @@ def _job_log_context(job: dict | None) -> dict:
 
 
 def worker_registration_payload() -> dict:
+    with STATE_LOCK:
+        current_jobs = len(ACTIVE_JOB_IDS)
+
     return {
         "worker_id": WORKER_ID,
         "label": WORKER_LABEL,
@@ -71,10 +83,13 @@ def worker_registration_payload() -> dict:
         "status": "online",
         "version": APP_VERSION,
         "capabilities": list(WORKER_CAPABILITIES),
+        "current_jobs": current_jobs,
         "max_concurrent_jobs": WORKER_MAX_CONCURRENT_JOBS,
         "metadata": {
             "hostname": socket.gethostname(),
             "blob_configured": bool(BLOB_READ_WRITE_TOKEN),
+            "runtime_id": WORKER_RUNTIME_ID,
+            "process_started_at": WORKER_PROCESS_STARTED_AT,
         },
     }
 
@@ -84,15 +99,145 @@ def _update_state(**changes) -> None:
         RUNTIME_STATE.update(changes)
 
 
-def _set_active_job(job_id: str, is_active: bool) -> None:
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _seconds_since_iso(value: str | None, now: datetime | None = None) -> int | None:
+    parsed = _parse_iso_datetime(value)
+    if parsed is None:
+        return None
+    reference = now or _utc_now()
+    return max(0, int((reference - parsed).total_seconds()))
+
+
+def _snapshot_active_job_details_locked() -> list[dict]:
+    now = _utc_now()
+    details = []
+    for job_id in sorted(ACTIVE_JOB_IDS):
+        raw_detail = dict(ACTIVE_JOB_DETAILS.get(job_id) or {})
+        started_at = raw_detail.get("started_at")
+        last_progress_at = raw_detail.get("last_progress_at") or started_at
+        runtime_seconds = _seconds_since_iso(started_at, now)
+        seconds_since_progress = _seconds_since_iso(last_progress_at, now)
+        is_stuck = bool(
+            WORKER_JOB_STUCK_AFTER_SECONDS
+            and seconds_since_progress is not None
+            and seconds_since_progress >= WORKER_JOB_STUCK_AFTER_SECONDS
+        )
+        details.append(
+            {
+                **raw_detail,
+                "job_id": job_id,
+                "runtime_seconds": runtime_seconds,
+                "seconds_since_progress": seconds_since_progress,
+                "is_stuck": is_stuck,
+                "stuck_after_seconds": WORKER_JOB_STUCK_AFTER_SECONDS or None,
+            }
+        )
+    return details
+
+
+def _refresh_active_job_state_locked() -> None:
+    active_job_details = _snapshot_active_job_details_locked()
+    RUNTIME_STATE["active_jobs"] = sorted(ACTIVE_JOB_IDS)
+    RUNTIME_STATE["active_job_count"] = len(ACTIVE_JOB_IDS)
+    RUNTIME_STATE["active_job_details"] = active_job_details
+    RUNTIME_STATE["has_stuck_jobs"] = any(job.get("is_stuck") for job in active_job_details)
+
+
+def _register_active_job(job: dict, *, thread_name: str | None = None) -> None:
+    job_id = str(job.get("id") or "")
+    if not job_id:
+        return
+
+    now = now_iso()
     with STATE_LOCK:
-        if is_active:
-            ACTIVE_JOB_IDS.add(job_id)
-        else:
-            ACTIVE_JOB_IDS.discard(job_id)
-            ACTIVE_JOB_THREADS.pop(job_id, None)
-        RUNTIME_STATE["active_jobs"] = sorted(ACTIVE_JOB_IDS)
-        RUNTIME_STATE["active_job_count"] = len(ACTIVE_JOB_IDS)
+        ACTIVE_JOB_IDS.add(job_id)
+        ACTIVE_JOB_DETAILS[job_id] = {
+            "job_id": job_id,
+            "kind": str(job.get("kind") or ""),
+            "status": "running",
+            "stage": "claimed",
+            "stage_label": "Job recebido pelo worker.",
+            "started_at": now,
+            "last_progress_at": now,
+            "thread_name": thread_name,
+            "details": {},
+        }
+        _refresh_active_job_state_locked()
+
+
+def _mark_job_progress(
+    job_id: str,
+    stage: str,
+    detail: str | None = None,
+    *,
+    details: dict | None = None,
+    touch: bool = True,
+) -> None:
+    if not job_id:
+        return
+
+    with STATE_LOCK:
+        current = ACTIVE_JOB_DETAILS.get(job_id)
+        if not current:
+            return
+
+        current["stage"] = stage
+        if detail is not None:
+            current["stage_label"] = detail
+        if details:
+            current["details"] = {
+                **(current.get("details") or {}),
+                **details,
+            }
+        if touch:
+            current["last_progress_at"] = now_iso()
+        _refresh_active_job_state_locked()
+
+
+def _clear_active_job(job_id: str) -> None:
+    with STATE_LOCK:
+        ACTIVE_JOB_IDS.discard(job_id)
+        ACTIVE_JOB_THREADS.pop(job_id, None)
+        ACTIVE_JOB_DETAILS.pop(job_id, None)
+        STUCK_WARNING_JOB_IDS.discard(job_id)
+        _refresh_active_job_state_locked()
+
+
+def _warn_for_stuck_jobs_once() -> None:
+    if not WORKER_JOB_STUCK_AFTER_SECONDS:
+        return
+
+    stuck_jobs = []
+    with STATE_LOCK:
+        for job in _snapshot_active_job_details_locked():
+            job_id = str(job.get("job_id") or "")
+            if not job.get("is_stuck") or job_id in STUCK_WARNING_JOB_IDS:
+                continue
+            STUCK_WARNING_JOB_IDS.add(job_id)
+            stuck_jobs.append(job)
+        _refresh_active_job_state_locked()
+
+    for job in stuck_jobs:
+        logger.warning(
+            "Job sem progresso ha tempo demais: job_id=%s kind=%s stage=%s seconds_since_progress=%s stuck_after=%s",
+            job.get("job_id"),
+            job.get("kind"),
+            job.get("stage"),
+            job.get("seconds_since_progress"),
+            job.get("stuck_after_seconds"),
+        )
 
 
 def _request_headers() -> dict[str, str]:
@@ -267,25 +412,57 @@ def fail_job(job_id: str, error_payload: dict) -> dict | None:
     return response
 
 
-def _execute_job(job: dict) -> None:
+def _execute_job(job: dict, thread_name: str | None = None) -> None:
     job_id = str(job.get("id") or "")
     if not job_id:
         logger.warning("Ignorando job sem id: payload=%s", compact_json(job))
         return
 
     job_context = _job_log_context(job)
-    _set_active_job(job_id, True)
+    _register_active_job(job, thread_name=thread_name)
     logger.info("Iniciando execucao do job: %s", compact_json(job_context))
     try:
+        _mark_job_progress(job_id, "loading_context", "Carregando contexto do job.")
         context = load_job_context(job_id) or {}
+        context_keys = sorted(context.keys())
         logger.info(
             "Contexto do job pronto: job_id=%s context_keys=%s",
             job_id,
-            sorted(context.keys()),
+            context_keys,
         )
-        result = process_control_plane_job(job, context)
+        _mark_job_progress(
+            job_id,
+            "processing",
+            "Contexto carregado; iniciando processamento.",
+            details={"context_keys": context_keys},
+        )
+
+        def report_progress(stage, detail=None, *, details=None, touch=True):
+            _mark_job_progress(
+                job_id,
+                stage,
+                detail,
+                details=details,
+                touch=touch,
+            )
+
+        result = process_control_plane_job(
+            job,
+            context,
+            report_progress=report_progress,
+        )
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        _mark_job_progress(
+            job_id,
+            "failed",
+            "Job falhou durante o processamento.",
+            details={
+                "error": detail,
+                "status_code": exc.status_code,
+            },
+            touch=False,
+        )
         logger.error(
             "Job falhou com erro HTTP: job_id=%s kind=%s status_code=%s detail=%s",
             job_id,
@@ -310,6 +487,13 @@ def _execute_job(job: dict) -> None:
             )
             _update_state(last_error=f"{detail} | Falha ao reportar erro do job: {report_exc}")
     except Exception as exc:  # pragma: no cover - defensive
+        _mark_job_progress(
+            job_id,
+            "failed",
+            "Job falhou com excecao inesperada.",
+            details={"error": str(exc)},
+            touch=False,
+        )
         logger.exception(
             "Job falhou com excecao inesperada: job_id=%s kind=%s",
             job_id,
@@ -331,6 +515,12 @@ def _execute_job(job: dict) -> None:
             )
             _update_state(last_error=f"{exc} | Falha ao reportar erro do job: {report_exc}")
     else:
+        _mark_job_progress(
+            job_id,
+            "reporting_success",
+            "Processamento concluido; reportando resultado ao control plane.",
+            details={"result_keys": sorted((result or {}).keys())},
+        )
         logger.info(
             "Job processado com sucesso localmente: job_id=%s result_keys=%s",
             job_id,
@@ -346,7 +536,7 @@ def _execute_job(job: dict) -> None:
             )
             _update_state(last_error=f"Falha ao reportar conclusao do job {job_id}: {exc}")
     finally:
-        _set_active_job(job_id, False)
+        _clear_active_job(job_id)
         logger.info("Execucao do job finalizada: job_id=%s", job_id)
 
 
@@ -377,7 +567,7 @@ def _try_start_jobs() -> None:
 
         worker_thread = Thread(
             target=_execute_job,
-            args=(job,),
+            args=(job, f"control-plane-job-{job_id}"),
             daemon=True,
             name=f"control-plane-job-{job_id}",
         )
@@ -426,6 +616,8 @@ def _control_plane_loop() -> None:
                 logger.exception("Falha durante polling/claim de jobs: %s", exc)
             last_poll_monotonic = now_monotonic
 
+        _warn_for_stuck_jobs_once()
+
         STOP_EVENT.wait(1.0)
 
     logger.info("Loop do control plane encerrado.")
@@ -468,7 +660,9 @@ def stop_control_plane_heartbeat() -> None:
 
 def control_plane_status() -> dict:
     with STATE_LOCK:
+        _refresh_active_job_state_locked()
         runtime_state = dict(RUNTIME_STATE)
+        runtime_state["active_job_details"] = [dict(job) for job in RUNTIME_STATE.get("active_job_details", [])]
 
     return {
         **runtime_state,
@@ -479,8 +673,10 @@ def control_plane_status() -> dict:
         "heartbeat_interval_seconds": WORKER_HEARTBEAT_INTERVAL_SECONDS,
         "job_poll_enabled": WORKER_JOB_POLL_ENABLED,
         "job_poll_interval_seconds": WORKER_JOB_POLL_INTERVAL_SECONDS,
+        "job_stuck_after_seconds": WORKER_JOB_STUCK_AFTER_SECONDS or None,
         "max_concurrent_jobs": WORKER_MAX_CONCURRENT_JOBS,
         "capabilities": list(WORKER_CAPABILITIES),
         "blob_configured": bool(BLOB_READ_WRITE_TOKEN),
         "version": APP_VERSION,
+        "current_job": runtime_state["active_job_details"][0] if runtime_state.get("active_job_details") else None,
     }

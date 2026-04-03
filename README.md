@@ -58,6 +58,7 @@ Use `venv` por padrao. Rodar fora dela pode misturar `numpy/scipy/sklearn` do si
 - `WORKER_SHARED_TOKEN`: token compartilhado com o frontend
 - `BLOB_READ_WRITE_TOKEN`: token do Blob para leitura/escrita dos artefatos
 - `BLOB_ACCESS`: `public` ou `private`
+- `WORKER_JOB_STUCK_AFTER_SECONDS`: limite sem progresso para marcar o job como provavelmente travado no `/api/worker`
 
 ## Fluxo
 
