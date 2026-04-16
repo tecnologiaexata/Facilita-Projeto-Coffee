@@ -56,7 +56,7 @@ Use `venv` por padrao. Rodar fora dela pode misturar `numpy/scipy/sklearn` do si
 - `CONTROL_PLANE_URL`: URL do frontend/control plane
 - `WORKER_PUBLIC_URL`: URL publica do worker usada no registro/heartbeat
 - `WORKER_DEFAULT_YOLO_DEVICE`: GPU padrao usada pelo YOLO, por exemplo `0`
-- `PYTORCH_INSTALL_MODE`: `auto`, `cuda`, `cpu` ou `skip` para controlar como o `workerctl.sh` instala o PyTorch
+- `PYTORCH_INSTALL_MODE`: `cuda`, `auto`, `cpu` ou `skip` para controlar como o `workerctl.sh` instala o PyTorch. O padrao atual do projeto e `cuda`
 - `PYTORCH_INDEX_URL`: indice PyTorch usado quando o modo CUDA estiver ativo
 - `WORKER_SHARED_TOKEN`: token compartilhado com o frontend
 - `BLOB_READ_WRITE_TOKEN`: token do Blob para leitura/escrita dos artefatos

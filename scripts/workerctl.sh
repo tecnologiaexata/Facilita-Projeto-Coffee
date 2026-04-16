@@ -67,7 +67,7 @@ is_running() {
 requirements_hash() {
   local requirements_sha pytorch_mode pytorch_index
   requirements_sha="$(sha256sum "${REQUIREMENTS_FILE}" | awk '{print $1}')"
-  pytorch_mode="${PYTORCH_INSTALL_MODE:-auto}"
+  pytorch_mode="${PYTORCH_INSTALL_MODE:-cuda}"
   pytorch_index="${PYTORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}"
   printf '%s' "${requirements_sha}|${pytorch_mode}|${pytorch_index}" | sha256sum | awk '{print $1}'
 }
@@ -84,7 +84,7 @@ has_nvidia_gpu() {
 }
 
 pytorch_install_mode() {
-  printf '%s' "${PYTORCH_INSTALL_MODE:-auto}"
+  printf '%s' "${PYTORCH_INSTALL_MODE:-cuda}"
 }
 
 pytorch_index_url() {
