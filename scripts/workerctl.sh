@@ -65,13 +65,100 @@ is_running() {
 }
 
 requirements_hash() {
-  sha256sum "${REQUIREMENTS_FILE}" | awk '{print $1}'
+  local requirements_sha pytorch_mode pytorch_index
+  requirements_sha="$(sha256sum "${REQUIREMENTS_FILE}" | awk '{print $1}')"
+  pytorch_mode="${PYTORCH_INSTALL_MODE:-auto}"
+  pytorch_index="${PYTORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}"
+  printf '%s' "${requirements_sha}|${pytorch_mode}|${pytorch_index}" | sha256sum | awk '{print $1}'
 }
 
 ensure_venv() {
   if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
     log "criando ambiente virtual em ${VENV_DIR}"
     python3 -m venv "${VENV_DIR}" || fail "nao foi possivel criar .venv. Instale python3-venv."
+  fi
+}
+
+has_nvidia_gpu() {
+  command -v nvidia-smi >/dev/null 2>&1
+}
+
+pytorch_install_mode() {
+  printf '%s' "${PYTORCH_INSTALL_MODE:-auto}"
+}
+
+pytorch_index_url() {
+  printf '%s' "${PYTORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}"
+}
+
+ensure_pytorch_runtime() {
+  local mode index_url
+  mode="$(pytorch_install_mode)"
+  index_url="$(pytorch_index_url)"
+
+  case "${mode}" in
+    skip)
+      log "instalacao do PyTorch ignorada por PYTORCH_INSTALL_MODE=skip"
+      return
+      ;;
+    cpu)
+      log "instalando PyTorch CPU-only"
+      "${VENV_DIR}/bin/pip" install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+      return
+      ;;
+    cuda)
+      log "instalando PyTorch com CUDA a partir de ${index_url}"
+      "${VENV_DIR}/bin/pip" install torch torchvision torchaudio --index-url "${index_url}"
+      return
+      ;;
+    auto)
+      if has_nvidia_gpu; then
+        log "GPU detectada; instalando PyTorch com CUDA a partir de ${index_url}"
+        "${VENV_DIR}/bin/pip" install torch torchvision torchaudio --index-url "${index_url}"
+      else
+        log "nenhuma GPU detectada via nvidia-smi; mantendo modo automatico sem instalar wheel CUDA dedicada"
+      fi
+      return
+      ;;
+    *)
+      fail "PYTORCH_INSTALL_MODE invalido: ${mode}. Use auto, cuda, cpu ou skip."
+      ;;
+  esac
+}
+
+verify_torch_cuda() {
+  local mode
+  mode="$(pytorch_install_mode)"
+
+  "${VENV_DIR}/bin/python" - <<'PY'
+import json
+import sys
+
+try:
+    import torch
+except Exception as exc:
+    print(json.dumps({"ok": False, "error": f"Falha ao importar torch: {exc}"}, ensure_ascii=False))
+    raise SystemExit(1)
+
+payload = {
+    "ok": True,
+    "torch_version": getattr(torch, "__version__", None),
+    "cuda_build_version": getattr(getattr(torch, "version", None), "cuda", None),
+    "cuda_available": bool(torch.cuda.is_available()),
+    "device_count": int(torch.cuda.device_count()) if torch.cuda.is_available() else 0,
+    "device_names": [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())] if torch.cuda.is_available() else [],
+}
+print(json.dumps(payload, ensure_ascii=False))
+PY
+
+  if [[ "${mode}" == "cuda" ]]; then
+    "${VENV_DIR}/bin/python" - <<'PY'
+import sys
+import torch
+
+if not torch.cuda.is_available():
+    raise SystemExit("PyTorch foi configurado para CUDA, mas torch.cuda.is_available() retornou false.")
+PY
   fi
 }
 
@@ -92,7 +179,9 @@ ensure_dependencies() {
 
   log "instalando dependencias Python"
   "${VENV_DIR}/bin/python" -m pip install --upgrade pip setuptools wheel
+  ensure_pytorch_runtime
   "${VENV_DIR}/bin/pip" install -r "${REQUIREMENTS_FILE}"
+  verify_torch_cuda
   printf '%s' "${current_hash}" > "${REQUIREMENTS_STAMP}"
 }
 
@@ -210,6 +299,7 @@ Uso:
   bash scripts/workerctl.sh status
   bash scripts/workerctl.sh health
   bash scripts/workerctl.sh logs
+  bash scripts/workerctl.sh verify-gpu
 
 Comportamento:
   - le o .env na raiz do projeto
@@ -241,6 +331,11 @@ main() {
       ;;
     health)
       health_worker
+      ;;
+    verify-gpu)
+      load_env
+      ensure_venv
+      verify_torch_cuda
       ;;
     logs)
       tail_logs
