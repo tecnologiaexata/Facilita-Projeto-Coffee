@@ -700,12 +700,14 @@ def _load_model_from_context(context: dict):
             detail="Nao existe modelo ativo no control plane para executar a inferencia.",
         )
     logger.info("Baixando modelo ativo YOLO para inferencia: model_id=%s", model.get("id"))
+    model_reference = _asset_reference(model_asset)
     model_bytes = download_blob_bytes(
-        _asset_reference(model_asset),
+        model_reference,
         access=model_asset.get("access") or blob_access(),
         expected_size=_asset_expected_size(model_asset),
     )
-    suffix = os.path.splitext(_asset_reference(model_asset) or "model.pt")[1] or ".pt"
+    model_filename = model_asset.get("filename") or guess_filename_from_reference(model_reference, "model.pt")
+    suffix = os.path.splitext(model_filename)[1] or ".pt"
     temp_file = tempfile.NamedTemporaryFile(prefix="facilita-model-", suffix=suffix, delete=False)
     temp_file.write(model_bytes)
     temp_file.flush()
