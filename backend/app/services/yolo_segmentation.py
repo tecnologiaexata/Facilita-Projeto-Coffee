@@ -172,7 +172,7 @@ def resolve_training_runtime_params(params: dict, samples: list[dict]) -> dict:
             runtime["resolved_train_imgsz"] = tile_size
             runtime["resolution_mode"] = "explicit_tiled"
         else:
-            runtime["resolution_mode"] = "explicit"
+            runtime["resolution_mode"] = "fixed_3072" if int(runtime.get("imgsz") or 0) == 3072 else "explicit"
         runtime["resolved_train_imgsz"] = runtime.get("imgsz")
 
     if runtime["tile_enabled"] and runtime.get("batch") == -1:
@@ -201,9 +201,11 @@ def resolve_training_params(context: dict | None = None) -> dict:
     if raw_imgsz in (None, ""):
         raw_imgsz = training.get("image_size") or training.get("imageSize")
     normalized_imgsz = _normalize_imgsz(raw_imgsz)
+    if normalized_imgsz is None:
+        normalized_imgsz = 3072
     native_resolution = _coerce_bool(
         training.get("native_resolution") or training.get("nativeResolution"),
-        default=normalized_imgsz is None,
+        default=False,
     )
     tile_enabled = _coerce_bool(
         training.get("tile_enabled") or training.get("tileEnabled"),
