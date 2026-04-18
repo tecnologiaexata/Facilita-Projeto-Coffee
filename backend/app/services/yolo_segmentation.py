@@ -162,14 +162,10 @@ def resolve_training_runtime_params(params: dict, samples: list[dict]) -> dict:
 
     if runtime.get("native_resolution") and runtime.get("imgsz") is None:
         runtime["requested_imgsz"] = "native"
-        if runtime["tile_enabled"]:
-            runtime["imgsz"] = tile_size
-            runtime["resolved_train_imgsz"] = tile_size
-            runtime["resolution_mode"] = "native_tiled"
-        else:
-            runtime["imgsz"] = _align_to_stride(max_long_side)
-            runtime["resolved_train_imgsz"] = runtime["imgsz"]
-            runtime["resolution_mode"] = "native_long_side"
+        runtime["tile_enabled"] = False
+        runtime["imgsz"] = min(_align_to_stride(max_long_side), 3072)
+        runtime["resolved_train_imgsz"] = runtime["imgsz"]
+        runtime["resolution_mode"] = "native_capped_3072"
     else:
         if runtime["tile_enabled"]:
             runtime["imgsz"] = tile_size
@@ -211,7 +207,7 @@ def resolve_training_params(context: dict | None = None) -> dict:
     )
     tile_enabled = _coerce_bool(
         training.get("tile_enabled") or training.get("tileEnabled"),
-        default=True,
+        default=False,
     )
     return {
         "model": training.get("base_model") or training.get("baseModel") or model_cfg.get("base_model") or "yolo11m-seg.pt",
