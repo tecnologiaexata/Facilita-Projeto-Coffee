@@ -31,10 +31,10 @@ from app.services.gpu_runtime import normalize_requested_device, require_gpu_dev
 from app.services.modeling import build_features, calculate_inference_payload, compute_metrics
 from app.services.yolo_segmentation import (
     build_training_summary,
-    build_yolo_class_mask,
     ensure_ultralytics_available,
     evaluate_yolo_model_on_samples,
     export_samples_to_yolo_dataset,
+    predict_sample_class_mask,
     resolve_prediction_imgsz,
     resolve_training_params,
     resolve_training_runtime_params,
@@ -583,6 +583,7 @@ def _process_training(context: dict, report_progress=None) -> dict:
             loaded_samples=loaded_samples,
             split_map=split_map,
             output_dir=workdir,
+            params=params,
         )
         _report_progress(
             report_progress,
@@ -655,8 +656,14 @@ def _process_training(context: dict, report_progress=None) -> dict:
                 "imgsz": params["imgsz"],
                 "native_resolution": params.get("native_resolution"),
                 "resolution_mode": params.get("resolution_mode"),
+                "tile_enabled": params.get("tile_enabled"),
+                "tile_size": params.get("tile_size"),
+                "tile_overlap": params.get("tile_overlap"),
+                "tile_count_estimate": params.get("tile_count_estimate"),
+                "dataset_tiles": dataset_paths.get("exported_counts"),
                 "epochs": params["epochs"],
                 "batch": params["batch"],
+                "batch_mode": params.get("batch_mode"),
                 "patience": params["patience"],
                 "optimizer": params["optimizer"],
                 "conf": params["conf"],
@@ -777,21 +784,7 @@ def _process_inference(payload: dict, context: dict, report_progress=None) -> di
             image_shape=list(image_rgb.shape),
         )
         predict_imgsz = resolve_prediction_imgsz(params, image_rgb.shape[:2])
-        prediction_result = yolo_model.predict(
-            source=image_rgb,
-            task="segment",
-            imgsz=predict_imgsz,
-            conf=params["conf"],
-            iou=params["iou"],
-            retina_masks=True,
-            verbose=False,
-            device=device,
-        )[0]
-        prediction = build_yolo_class_mask(
-            prediction_result,
-            image_shape=image_rgb.shape[:2],
-            mask_threshold=params["mask_threshold"],
-        )
+        prediction = predict_sample_class_mask(yolo_model, image_rgb, params=params, device=device)
         logger.info(
             "Inferencia YOLO calculada: inference_run_id=%s image_shape=%s model_id=%s",
             inference_run_id,
@@ -836,6 +829,9 @@ def _process_inference(payload: dict, context: dict, report_progress=None) -> di
                 "plant_inference_mode": "exclusion",
                 "imgsz": predict_imgsz,
                 "native_resolution": params.get("native_resolution"),
+                "tile_enabled": params.get("tile_enabled"),
+                "tile_size": params.get("tile_size"),
+                "tile_overlap": params.get("tile_overlap"),
             },
         }
         item["assets"]["result_json"] = upload_json_blob(f"{output_prefix}/result.json", item)

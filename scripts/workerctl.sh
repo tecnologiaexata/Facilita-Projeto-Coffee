@@ -270,6 +270,7 @@ start_worker() {
   logfile="$(worker_log_file)"
   host="$(worker_host)"
   port="$(worker_port)"
+  export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
   log "subindo worker em ${host}:${port}"
   (

@@ -37,6 +37,15 @@ def _coerce_bool(value, default: bool = False) -> bool:
     return default
 
 
+def _coerce_int(value, default: int) -> int:
+    try:
+        if value in (None, ""):
+            return int(default)
+        return int(value)
+    except Exception:
+        return int(default)
+
+
 def _align_to_stride(value: int, stride: int = 32) -> int:
     return max(stride, int(math.ceil(max(float(value), 1.0) / stride) * stride))
 
@@ -79,6 +88,47 @@ def _format_imgsz(value) -> str:
     return str(value)
 
 
+def _axis_windows(size: int, tile_size: int, overlap: int) -> list[tuple[int, int]]:
+    size = int(size)
+    tile_size = max(1, min(int(tile_size), size))
+    overlap = max(0, min(int(overlap), tile_size - 1))
+    if size <= tile_size:
+        return [(0, size)]
+
+    stride = max(1, tile_size - overlap)
+    starts = list(range(0, max(size - tile_size, 0) + 1, stride))
+    last_start = size - tile_size
+    if not starts or starts[-1] != last_start:
+        starts.append(last_start)
+    return [(start, start + tile_size) for start in starts]
+
+
+def iter_image_tiles(image_shape: tuple[int, int], tile_size: int, overlap: int) -> list[dict]:
+    height, width = image_shape[:2]
+    windows = []
+    for row_index, (y0, y1) in enumerate(_axis_windows(height, tile_size, overlap)):
+        for col_index, (x0, x1) in enumerate(_axis_windows(width, tile_size, overlap)):
+            windows.append(
+                {
+                    "row_index": row_index,
+                    "col_index": col_index,
+                    "y0": y0,
+                    "y1": y1,
+                    "x0": x0,
+                    "x1": x1,
+                }
+            )
+    return windows
+
+
+def _should_tile_image(params: dict, image_shape: tuple[int, int]) -> bool:
+    tile_size = int(params.get("tile_size") or 0)
+    if not params.get("tile_enabled") or tile_size <= 0:
+        return False
+    height, width = image_shape[:2]
+    return height > tile_size or width > tile_size
+
+
 def resolve_training_runtime_params(params: dict, samples: list[dict]) -> dict:
     runtime = dict(params)
     shapes = [tuple(sample["image_rgb"].shape[:2]) for sample in samples if sample.get("image_rgb") is not None]
@@ -95,18 +145,51 @@ def resolve_training_runtime_params(params: dict, samples: list[dict]) -> dict:
         "max_width": int(max(widths)),
     }
 
+    max_long_side = max(max(heights), max(widths))
+    tile_size = _align_to_stride(runtime.get("tile_size") or 1280)
+    tile_overlap = max(0, _coerce_int(runtime.get("tile_overlap"), 256))
+    tile_overlap = min(tile_overlap, max(tile_size - 32, 0))
+
+    auto_tile = max_long_side > tile_size
+    runtime["tile_size"] = tile_size
+    runtime["tile_overlap"] = tile_overlap
+    runtime["tile_enabled"] = bool(runtime.get("tile_enabled")) and auto_tile
+    runtime["tile_count_estimate"] = 0
+    if runtime["tile_enabled"]:
+        runtime["tile_count_estimate"] = int(
+            sum(len(iter_image_tiles(shape, tile_size, tile_overlap)) for shape in shapes)
+        )
+
     if runtime.get("native_resolution") and runtime.get("imgsz") is None:
         runtime["requested_imgsz"] = "native"
-        runtime["imgsz"] = _align_to_stride(max(max(heights), max(widths)))
-        runtime["resolved_train_imgsz"] = runtime["imgsz"]
-        runtime["resolution_mode"] = "native_long_side"
+        if runtime["tile_enabled"]:
+            runtime["imgsz"] = tile_size
+            runtime["resolved_train_imgsz"] = tile_size
+            runtime["resolution_mode"] = "native_tiled"
+        else:
+            runtime["imgsz"] = _align_to_stride(max_long_side)
+            runtime["resolved_train_imgsz"] = runtime["imgsz"]
+            runtime["resolution_mode"] = "native_long_side"
     else:
+        if runtime["tile_enabled"]:
+            runtime["imgsz"] = tile_size
+            runtime["resolved_train_imgsz"] = tile_size
+            runtime["resolution_mode"] = "explicit_tiled"
+        else:
+            runtime["resolution_mode"] = "explicit"
         runtime["resolved_train_imgsz"] = runtime.get("imgsz")
-        runtime["resolution_mode"] = "explicit"
+
+    if runtime["tile_enabled"] and runtime.get("batch") == -1:
+        runtime["batch"] = 2
+        runtime["batch_mode"] = "fixed_for_tiles"
+    else:
+        runtime["batch_mode"] = "user_defined" if runtime.get("batch") != -1 else "auto"
     return runtime
 
 
 def resolve_prediction_imgsz(params: dict, image_shape: tuple[int, int]) -> int | list[int]:
+    if _should_tile_image(params, image_shape):
+        return int(params["tile_size"])
     explicit_imgsz = params.get("imgsz")
     if explicit_imgsz is not None:
         return explicit_imgsz
@@ -125,6 +208,10 @@ def resolve_training_params(context: dict | None = None) -> dict:
     native_resolution = _coerce_bool(
         training.get("native_resolution") or training.get("nativeResolution"),
         default=normalized_imgsz is None,
+    )
+    tile_enabled = _coerce_bool(
+        training.get("tile_enabled") or training.get("tileEnabled"),
+        default=True,
     )
     return {
         "model": training.get("base_model") or training.get("baseModel") or model_cfg.get("base_model") or "yolo11m-seg.pt",
@@ -161,6 +248,9 @@ def resolve_training_params(context: dict | None = None) -> dict:
         "close_mosaic": int(training.get("close_mosaic") or training.get("closeMosaic") or 10),
         "native_resolution": native_resolution,
         "rect": _coerce_bool(training.get("rect"), default=True),
+        "tile_enabled": tile_enabled,
+        "tile_size": _coerce_int(training.get("tile_size") or training.get("tileSize"), 1280),
+        "tile_overlap": _coerce_int(training.get("tile_overlap") or training.get("tileOverlap"), 256),
     }
 
 
@@ -194,24 +284,38 @@ def _mask_to_yolo_segments(mask: np.ndarray, class_id: int, *, min_area: int = 2
     return lines
 
 
-def export_samples_to_yolo_dataset(*, loaded_samples: list[dict], split_map: dict, output_dir: str) -> dict:
+def export_samples_to_yolo_dataset(*, loaded_samples: list[dict], split_map: dict, output_dir: str, params: dict | None = None) -> dict:
+    params = params or {}
     root = Path(output_dir) / "yolo_dataset"
     for split in ("train", "val", "test"):
         (root / "images" / split).mkdir(parents=True, exist_ok=True)
         (root / "labels" / split).mkdir(parents=True, exist_ok=True)
 
     loaded_by_id = {sample["id"]: sample for sample in loaded_samples}
+    exported_counts = {split: 0 for split in ("train", "val", "test")}
     for split, sample_ids in split_map.items():
         for sample_id in sample_ids:
             sample = loaded_by_id[sample_id]
-            stem = sample_id
-            image_path = root / "images" / split / f"{stem}.png"
-            label_path = root / "labels" / split / f"{stem}.txt"
-            Image.fromarray(sample["image_rgb"]).save(image_path)
-            lines: list[str] = []
-            for class_id in ANNOTATED_CLASS_IDS:
-                lines.extend(_mask_to_yolo_segments(sample["mask"], class_id))
-            label_path.write_text("\n".join(lines), encoding="utf-8")
+            windows = (
+                iter_image_tiles(sample["mask"].shape, int(params["tile_size"]), int(params["tile_overlap"]))
+                if _should_tile_image(params, sample["mask"].shape)
+                else [{"row_index": 0, "col_index": 0, "y0": 0, "y1": sample["mask"].shape[0], "x0": 0, "x1": sample["mask"].shape[1]}]
+            )
+            for window in windows:
+                y0, y1, x0, x1 = window["y0"], window["y1"], window["x0"], window["x1"]
+                image_tile = sample["image_rgb"][y0:y1, x0:x1]
+                mask_tile = sample["mask"][y0:y1, x0:x1]
+                stem = sample_id
+                if len(windows) > 1:
+                    stem = f"{sample_id}__r{window['row_index']:02d}_c{window['col_index']:02d}"
+                image_path = root / "images" / split / f"{stem}.png"
+                label_path = root / "labels" / split / f"{stem}.txt"
+                Image.fromarray(image_tile).save(image_path)
+                lines: list[str] = []
+                for class_id in ANNOTATED_CLASS_IDS:
+                    lines.extend(_mask_to_yolo_segments(mask_tile, class_id))
+                label_path.write_text("\n".join(lines), encoding="utf-8")
+                exported_counts[split] += 1
 
     names = {int(class_id): CLASS_MAP[class_id]["slug"] for class_id in ANNOTATED_CLASS_IDS}
     data_yaml = root / "data.yaml"
@@ -229,7 +333,7 @@ def export_samples_to_yolo_dataset(*, loaded_samples: list[dict], split_map: dic
         + "\n",
         encoding="utf-8",
     )
-    return {"root": str(root), "data_yaml": str(data_yaml)}
+    return {"root": str(root), "data_yaml": str(data_yaml), "exported_counts": exported_counts}
 
 
 def train_yolo_segmentation(*, data_yaml: str, output_dir: str, run_name: str, params: dict, progress_callback: Callable | None = None, training_run_id: str | None = None) -> dict:
@@ -304,27 +408,87 @@ def _draw_polygon_mask(mask: np.ndarray, polygon: np.ndarray, class_id: int) -> 
     cv2.fillPoly(mask, [polygon_int.reshape(-1, 1, 2)], int(class_id))
 
 
-def build_yolo_class_mask(result, *, image_shape: tuple[int, int], mask_threshold: float = 0.5) -> np.ndarray:
+def build_yolo_prediction_maps(result, *, image_shape: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
     height, width = image_shape
     class_mask = np.full((height, width), INFERRED_CLASS_ID, dtype=np.uint8)
+    score_mask = np.zeros((height, width), dtype=np.float32)
     boxes = getattr(result, "boxes", None)
     masks = getattr(result, "masks", None)
     if boxes is None or masks is None or boxes.cls is None or masks.xy is None:
-        return class_mask
+        return class_mask, score_mask
 
     classes = boxes.cls.detach().cpu().numpy().astype(int)
     confs = boxes.conf.detach().cpu().numpy() if boxes.conf is not None else np.ones(len(classes), dtype=np.float32)
     polygons = masks.xy
-    order = np.argsort(confs)
-    for idx in order:
+    for idx in np.argsort(confs):
         class_id = int(classes[idx])
         if class_id not in ANNOTATED_CLASS_IDS:
             continue
         polygon = polygons[idx]
         if polygon is None or len(polygon) < 3:
             continue
-        _draw_polygon_mask(class_mask, np.asarray(polygon, dtype=np.float32), class_id)
+        polygon_int = np.round(np.asarray(polygon, dtype=np.float32)).astype(np.int32)
+        if polygon_int.ndim != 2 or polygon_int.shape[0] < 3:
+            continue
+        candidate_region = np.zeros((height, width), dtype=np.uint8)
+        cv2.fillPoly(candidate_region, [polygon_int.reshape(-1, 1, 2)], 1)
+        candidate_mask = candidate_region.astype(bool)
+        if not np.any(candidate_mask):
+            continue
+        confidence = float(confs[idx])
+        update_mask = candidate_mask & (confidence >= score_mask)
+        class_mask[update_mask] = class_id
+        score_mask[update_mask] = confidence
+    return class_mask, score_mask
+
+
+def build_yolo_class_mask(result, *, image_shape: tuple[int, int], mask_threshold: float = 0.5) -> np.ndarray:
+    class_mask, _ = build_yolo_prediction_maps(result, image_shape=image_shape)
     return class_mask
+
+
+def predict_sample_class_mask(model, image_rgb: np.ndarray, *, params: dict, device: str) -> np.ndarray:
+    image_shape = image_rgb.shape[:2]
+    predict_imgsz = resolve_prediction_imgsz(params, image_shape)
+    if not _should_tile_image(params, image_shape):
+        result = model.predict(
+            source=image_rgb,
+            task="segment",
+            imgsz=predict_imgsz,
+            conf=params["conf"],
+            iou=params["iou"],
+            retina_masks=True,
+            verbose=False,
+            device=device,
+        )[0]
+        return build_yolo_class_mask(
+            result,
+            image_shape=image_shape,
+            mask_threshold=params["mask_threshold"],
+        )
+
+    full_mask = np.full(image_shape, INFERRED_CLASS_ID, dtype=np.uint8)
+    full_scores = np.zeros(image_shape, dtype=np.float32)
+    for window in iter_image_tiles(image_shape, int(params["tile_size"]), int(params["tile_overlap"])):
+        y0, y1, x0, x1 = window["y0"], window["y1"], window["x0"], window["x1"]
+        tile_rgb = image_rgb[y0:y1, x0:x1]
+        tile_result = model.predict(
+            source=tile_rgb,
+            task="segment",
+            imgsz=int(params["tile_size"]),
+            conf=params["conf"],
+            iou=params["iou"],
+            retina_masks=True,
+            verbose=False,
+            device=device,
+        )[0]
+        tile_mask, tile_scores = build_yolo_prediction_maps(tile_result, image_shape=tile_rgb.shape[:2])
+        region_scores = full_scores[y0:y1, x0:x1]
+        region_mask = full_mask[y0:y1, x0:x1]
+        update_mask = tile_scores > region_scores
+        region_scores[update_mask] = tile_scores[update_mask]
+        region_mask[update_mask] = tile_mask[update_mask]
+    return full_mask
 
 
 def evaluate_yolo_model_on_samples(model_path: str, samples: list[dict], *, params: dict) -> dict:
@@ -347,22 +511,7 @@ def evaluate_yolo_model_on_samples(model_path: str, samples: list[dict], *, para
     all_true = []
     all_pred = []
     for sample in samples:
-        predict_imgsz = resolve_prediction_imgsz(params, sample["mask"].shape)
-        result = model.predict(
-            source=sample["image_rgb"],
-            task="segment",
-            imgsz=predict_imgsz,
-            conf=params["conf"],
-            iou=params["iou"],
-            retina_masks=True,
-            verbose=False,
-            device=device,
-        )[0]
-        pred_mask = build_yolo_class_mask(
-            result,
-            image_shape=sample["mask"].shape,
-            mask_threshold=params["mask_threshold"],
-        )
+        pred_mask = predict_sample_class_mask(model, sample["image_rgb"], params=params, device=device)
         all_true.append(sample["mask"].reshape(-1))
         all_pred.append(pred_mask.reshape(-1))
     return compute_metrics(np.concatenate(all_true), np.concatenate(all_pred))
@@ -488,6 +637,11 @@ def build_training_summary(*, training_run_id: str, train_artifacts: dict, param
         "training_run_id": training_run_id,
         "params": params,
         "splits": {key: len(value) for key, value in split_map.items()},
+        "tile_enabled": bool(params.get("tile_enabled")),
+        "tile_size": params.get("tile_size"),
+        "tile_overlap": params.get("tile_overlap"),
+        "tile_count_estimate": params.get("tile_count_estimate"),
+        "batch_mode": params.get("batch_mode"),
         "best_epoch": best_epoch,
         "best_seg_map50_95": best_seg_map5095,
         "initial_seg_map50_95": initial_seg_map5095,
