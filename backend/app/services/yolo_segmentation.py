@@ -336,6 +336,13 @@ def _mask_to_yolo_segments(mask: np.ndarray, class_id: int, *, min_area: int = 2
     return lines
 
 
+def build_yolo_annotation_text_from_mask(class_mask: np.ndarray) -> str:
+    lines: list[str] = []
+    for class_id in ANNOTATED_CLASS_IDS:
+        lines.extend(_mask_to_yolo_segments(class_mask, class_id))
+    return "\n".join(lines)
+
+
 def export_samples_to_yolo_dataset(*, loaded_samples: list[dict], split_map: dict, output_dir: str, params: dict | None = None) -> dict:
     params = params or {}
     root = Path(output_dir) / "yolo_dataset"

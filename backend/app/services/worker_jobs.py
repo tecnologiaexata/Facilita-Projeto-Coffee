@@ -30,6 +30,7 @@ from app.services.cvat import export_cvat_for_mask
 from app.services.gpu_runtime import normalize_requested_device, require_gpu_device, torch_runtime_info
 from app.services.modeling import build_features, calculate_inference_payload, compute_metrics
 from app.services.yolo_segmentation import (
+    build_yolo_annotation_text_from_mask,
     build_training_summary,
     ensure_ultralytics_available,
     evaluate_yolo_model_on_samples,
@@ -810,6 +811,7 @@ def _process_inference(payload: dict, context: dict, report_progress=None) -> di
         )
         color_mask = build_color_mask(prediction)
         overlay = build_overlay(image_rgb, prediction)
+        annotation_text = build_yolo_annotation_text_from_mask(prediction)
 
         image_bytes = _encode_png(source_image)
         mask_bytes = _encode_png(Image.fromarray(prediction, mode="L"))
@@ -837,6 +839,11 @@ def _process_inference(payload: dict, context: dict, report_progress=None) -> di
                     f"{output_prefix}/overlay.png",
                     overlay_bytes,
                     content_type="image/png",
+                ),
+                "annotation_txt": upload_blob_bytes(
+                    f"{output_prefix}/annotation.txt",
+                    annotation_text.encode("utf-8"),
+                    content_type="text/plain; charset=utf-8",
                 ),
             },
             "metadata": {
