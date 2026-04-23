@@ -202,6 +202,29 @@ def resolve_prediction_imgsz(params: dict, image_shape: tuple[int, int]) -> int 
     return [_align_to_stride(height), _align_to_stride(width)]
 
 
+def _latest_checkpoint_from_directory(directory: Path) -> str:
+    if not directory.exists() or not directory.is_dir():
+        return str(directory)
+
+    weight_candidates = sorted(
+        directory.rglob("weights.pt"),
+        key=lambda path: (path.stat().st_mtime, str(path).lower()),
+        reverse=True,
+    )
+    if weight_candidates:
+        return str(weight_candidates[0].resolve())
+
+    checkpoint_candidates = sorted(
+        directory.rglob("*.pt"),
+        key=lambda path: (path.stat().st_mtime, str(path).lower()),
+        reverse=True,
+    )
+    if checkpoint_candidates:
+        return str(checkpoint_candidates[0].resolve())
+
+    return str(directory.resolve())
+
+
 def resolve_yolo_model_reference(reference: str | None, *, fallback: str | None = None) -> str:
     raw_value = str(reference or fallback or "").strip().strip("\"'")
     if not raw_value:
@@ -212,6 +235,9 @@ def resolve_yolo_model_reference(reference: str | None, *, fallback: str | None 
         candidate = Path(expanded)
     except Exception:
         return expanded
+
+    if candidate.exists() and candidate.is_dir():
+        return _latest_checkpoint_from_directory(candidate)
 
     if candidate.exists():
         return str(candidate.resolve())

@@ -56,7 +56,7 @@ Use `venv` por padrao. Rodar fora dela pode misturar `numpy/scipy/sklearn` do si
 - `CONTROL_PLANE_URL`: URL do frontend/control plane
 - `WORKER_PUBLIC_URL`: URL publica do worker usada no registro/heartbeat
 - `WORKER_DEFAULT_YOLO_DEVICE`: GPU padrao usada pelo YOLO, por exemplo `0`
-- `WORKER_DEFAULT_YOLO_MODEL`: caminho local opcional para um checkpoint `.pt`; pode ser usado como base no treino e como fallback na inferencia
+- `WORKER_DEFAULT_YOLO_MODEL`: caminho local opcional para um checkpoint `.pt` ou para uma pasta com pesos; pode ser usado como base no treino e como fallback na inferencia
 - `PYTORCH_INSTALL_MODE`: `cuda`, `auto`, `cpu` ou `skip` para controlar como o `workerctl.sh` instala o PyTorch. O padrao atual do projeto e `cuda`
 - `PYTORCH_INDEX_URL`: indice PyTorch usado quando o modo CUDA estiver ativo. Se ficar vazio, o `workerctl.sh` escolhe automaticamente `cu128` em GPUs Blackwell/B200 e `cu124` nas demais GPUs NVIDIA
 - `WORKER_SHARED_TOKEN`: token compartilhado com o frontend
@@ -69,13 +69,14 @@ Treino e inferencia exigem GPU CUDA funcional. Se o worker subir sem CUDA ou com
 Se voce ja baixou os pesos do YOLO manualmente, pode apontar o worker para eles no `.env`, por exemplo:
 
 ```env
-WORKER_DEFAULT_YOLO_MODEL=C:\Users\Michael - Facilita\Desktop\pesos\weights.pt
+WORKER_DEFAULT_YOLO_MODEL=C:\Users\Michael - Facilita\Desktop\pesos
 ```
 
 Com isso:
 
 - o treino usa esse checkpoint local como modelo base quando `base_model` nao vier no job
 - a inferencia consegue usar esse `.pt` como fallback quando nao houver modelo ativo vindo do control plane
+- se `WORKER_DEFAULT_YOLO_MODEL` apontar para uma pasta, o worker prioriza o `weights.pt` mais recente dentro dela; se nao existir `weights.pt`, usa o `.pt` mais novo encontrado
 
 ## Fluxo
 
