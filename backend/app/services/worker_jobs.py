@@ -209,6 +209,32 @@ def _encode_png(image: Image.Image) -> bytes:
     return buffer.getvalue()
 
 
+def _safe_dataset_stem(filename: str | None, fallback: str) -> str:
+    value = os.path.splitext(str(filename or "").strip())[0]
+    safe = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in value)
+    safe = "_".join(part for part in safe.split("_") if part)
+    return safe or fallback
+
+
+def _dataset_image_filename(original_filename: str | None, fallback_stem: str) -> str:
+    suffix = os.path.splitext(str(original_filename or "").strip())[1].lower()
+    if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
+        suffix = ".png"
+    return f"{_safe_dataset_stem(original_filename, fallback_stem)}{suffix}"
+
+
+def _encode_image_for_filename(image: Image.Image, filename: str) -> bytes:
+    suffix = os.path.splitext(str(filename or "").strip())[1].lower()
+    buffer = BytesIO()
+    if suffix in {".jpg", ".jpeg"}:
+        image.convert("RGB").save(buffer, format="JPEG", quality=95)
+    elif suffix == ".webp":
+        image.save(buffer, format="WEBP", quality=95)
+    else:
+        image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 def _annotated_class_slugs_from_mask(class_mask: np.ndarray) -> list[str]:
     return [
         CLASS_MAP[class_id]["slug"]
@@ -812,8 +838,10 @@ def _process_inference(payload: dict, context: dict, report_progress=None) -> di
         color_mask = build_color_mask(prediction)
         overlay = build_overlay(image_rgb, prediction)
         annotation_text = build_yolo_annotation_text_from_mask(prediction)
+        dataset_image_filename = _dataset_image_filename(original_filename, inference_run_id)
+        dataset_label_filename = f"{os.path.splitext(dataset_image_filename)[0]}.txt"
 
-        image_bytes = _encode_png(source_image)
+        image_bytes = _encode_image_for_filename(source_image, dataset_image_filename)
         mask_bytes = _encode_png(Image.fromarray(prediction, mode="L"))
         color_mask_bytes = _encode_png(Image.fromarray(color_mask))
         overlay_bytes = _encode_png(Image.fromarray(overlay))
@@ -828,7 +856,10 @@ def _process_inference(payload: dict, context: dict, report_progress=None) -> di
             "height": source_image.height,
             "metrics": metrics,
             "assets": {
-                "image": upload_blob_bytes(f"{output_prefix}/input.png", image_bytes, content_type="image/png"),
+                "image": upload_blob_bytes(
+                    f"{output_prefix}/dataset/images/{dataset_image_filename}",
+                    image_bytes,
+                ),
                 "mask": upload_blob_bytes(f"{output_prefix}/mask.png", mask_bytes, content_type="image/png"),
                 "color_mask": upload_blob_bytes(
                     f"{output_prefix}/color-mask.png",
@@ -841,7 +872,7 @@ def _process_inference(payload: dict, context: dict, report_progress=None) -> di
                     content_type="image/png",
                 ),
                 "annotation_txt": upload_blob_bytes(
-                    f"{output_prefix}/annotation.txt",
+                    f"{output_prefix}/dataset/labels/{dataset_label_filename}",
                     annotation_text.encode("utf-8"),
                     content_type="text/plain; charset=utf-8",
                 ),
@@ -856,6 +887,10 @@ def _process_inference(payload: dict, context: dict, report_progress=None) -> di
                 "tile_enabled": params.get("tile_enabled"),
                 "tile_size": params.get("tile_size"),
                 "tile_overlap": params.get("tile_overlap"),
+                "dataset_export": {
+                    "image_path": f"dataset/images/{dataset_image_filename}",
+                    "label_path": f"dataset/labels/{dataset_label_filename}",
+                },
             },
         }
         item["assets"]["result_json"] = upload_json_blob(f"{output_prefix}/result.json", item)
