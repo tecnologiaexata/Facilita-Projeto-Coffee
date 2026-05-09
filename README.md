@@ -70,6 +70,10 @@ Use `venv` por padrao. Rodar fora dela pode misturar `numpy/scipy/sklearn` do si
 
 Treino exige GPU CUDA funcional. A inferencia local YOLO usa GPU quando disponivel e pode cair para CPU; a inferencia Roboflow roda o modelo no Roboflow e pode ser processada pelo worker sem GPU.
 
+## Associacao agronomica
+
+O frontend pode enviar `agronomic_association` e `association_asset` no payload de inferencia. O worker nao calcula a associacao; ele apenas preserva esses campos em `metadata` do resultado para permitir que o frontend gere depois o CSV/GeoJSON final por ponto central.
+
 Se voce ja baixou os pesos do YOLO manualmente, pode apontar o worker para eles no `.env`, por exemplo:
 
 ```env

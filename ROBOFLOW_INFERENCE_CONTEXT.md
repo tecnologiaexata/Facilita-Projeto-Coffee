@@ -2,7 +2,7 @@
 
 Comando para retomar: "retomar inferencia Roboflow".
 
-Atualizado em 07/05/2026.
+Atualizado em 09/05/2026.
 
 ## Estado Atual Validado
 
@@ -20,6 +20,7 @@ O caminho aprovado para producao esta no repositorio `Facilita-Projeto-Coffee-Fr
 - O overlay correto e gerado como PNG a partir da mascara completa, igual ao padrao validado no localhost.
 - A classe `planta` e inferida por exclusao: a mascara inicia como `planta`, e os poligonos retornados pelo Roboflow sobrescrevem `fundo` e `coffee`.
 - O visualizador mostra identificacoes, percentuais e pixels de `coffee`, `planta` e `fundo`.
+- O frontend agora pode enviar `agronomic_association` e `association_asset`; o worker preserva esses campos em `metadata` quando executar inferencia YOLO local ou provider Roboflow via fila.
 
 Commits importantes no frontend:
 
@@ -183,6 +184,7 @@ Preferencias:
 - Os logs da rota direta registram etapas, payloads sanitizados, respostas, tentativas e variantes de imagem.
 - Os logs do lote usam os prefixos `[roboflow-batch]` e `[roboflow-batch-sync]`.
 - Resultados antigos mantem os artefatos antigos; para ver mudancas e preciso gerar nova inferencia.
+- Para gerar CSV/GeoJSON final por ponto central, usar o fluxo novo do frontend: `Coordenadas` -> inferencia -> `Gerar CSV Final`.
 
 ## Aprendizado do lote GPU - qualidade e confianca
 
