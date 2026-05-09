@@ -787,12 +787,33 @@ def _inference_provider_from_payload(payload: dict) -> str:
     raise HTTPException(status_code=400, detail=f"Provider de inferencia nao suportado: {provider}.")
 
 
+def _agronomic_association_from_payload(payload: dict, context: dict) -> dict | None:
+    value = (
+        _payload_value(payload, "agronomic_association", "agronomicAssociation")
+        or _payload_value(payload, "association", "association")
+        or context.get("agronomic_association")
+        or context.get("agronomicAssociation")
+    )
+    return value if isinstance(value, dict) and value else None
+
+
+def _association_asset_from_payload(payload: dict, context: dict) -> dict | None:
+    value = (
+        _payload_value(payload, "association_asset", "associationAsset")
+        or context.get("association_asset")
+        or context.get("associationAsset")
+    )
+    return value if isinstance(value, dict) and value else None
+
+
 def _process_roboflow_inference(payload: dict, context: dict, report_progress=None) -> dict:
     image_source = _payload_value(payload, "image_url", "imageUrl")
     if not image_source:
         raise HTTPException(status_code=400, detail="Job de inferencia precisa de image_url.")
 
     output = context.get("output") or {}
+    agronomic_association = _agronomic_association_from_payload(payload, context)
+    association_asset = _association_asset_from_payload(payload, context)
     inference_run_id = _context_value(output, "inference_run_id", "inferenceRunId") or make_asset_id("infer")
     output_prefix = _context_value(output, "prefix", "prefix") or f"inference-runs/{inference_run_id}"
     confidence = _payload_value(payload, "confidence", "confidence")
@@ -892,6 +913,8 @@ def _process_roboflow_inference(payload: dict, context: dict, report_progress=No
             "blob_access": blob_access(),
             "task": "segment",
             "provider": "roboflow",
+            "agronomic_association": agronomic_association,
+            "association_asset": association_asset,
             "roboflow": roboflow_metadata,
             "plant_inference_mode": "exclusion",
             "dataset_export": {
@@ -913,6 +936,8 @@ def _process_inference(payload: dict, context: dict, report_progress=None) -> di
     if provider == "roboflow":
         return _process_roboflow_inference(payload, context, report_progress=report_progress)
 
+    agronomic_association = _agronomic_association_from_payload(payload, context)
+    association_asset = _association_asset_from_payload(payload, context)
     params = resolve_training_params(context)
     requested_device = normalize_requested_device(params.get("device"))
     runtime = torch_runtime_info()
@@ -1019,6 +1044,8 @@ def _process_inference(payload: dict, context: dict, report_progress=None) -> di
                 "blob_access": blob_access(),
                 "task": "segment",
                 "provider": "local_yolo",
+                "agronomic_association": agronomic_association,
+                "association_asset": association_asset,
                 "plant_inference_mode": "exclusion",
                 "imgsz": predict_imgsz,
                 "native_resolution": params.get("native_resolution"),
