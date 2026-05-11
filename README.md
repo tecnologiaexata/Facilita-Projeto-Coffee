@@ -60,7 +60,7 @@ Use `venv` por padrao. Rodar fora dela pode misturar `numpy/scipy/sklearn` do si
 - `.worker-default-yolo-model`: arquivo versionado opcional na raiz do repositorio com um caminho local de pesos; e usado quando `WORKER_DEFAULT_YOLO_MODEL` nao vier definido no `.env`
 - `INFERENCE_PROVIDER`: provider padrao da inferencia, `local_yolo` ou `roboflow`; a tela tambem pode enviar o provider por job
 - `ROBOFLOW_API_KEY`, `ROBOFLOW_API_URL`, `ROBOFLOW_WORKSPACE`, `ROBOFLOW_WORKFLOW`: configuracao do Workflow Roboflow usado quando o provider for `roboflow`
-- `ROBOFLOW_CLASSES`, `ROBOFLOW_CLASSES_PARAMETER`, `ROBOFLOW_CONFIDENCE`, `ROBOFLOW_CONFIDENCE_PARAMETER`, `ROBOFLOW_MAX_IMAGE_SIDE`, `ROBOFLOW_USE_CACHE`, `ROBOFLOW_TIMEOUT_SECONDS`: parametros enviados ao Workflow e pre-processamento da imagem
+- `ROBOFLOW_CLASSES`, `ROBOFLOW_CLASSES_PARAMETER`, `ROBOFLOW_CONFIDENCE`, `ROBOFLOW_CONFIDENCE_PARAMETER`, `ROBOFLOW_MAX_IMAGE_SIDE`, `ROBOFLOW_FALLBACK_MAX_SIDES`, `ROBOFLOW_USE_CACHE`, `ROBOFLOW_TIMEOUT_SECONDS`: parametros enviados ao Workflow, pre-processamento da imagem e fallbacks de tamanho quando o Roboflow retornar erro transitorio
 - `PYTORCH_INSTALL_MODE`: `cuda`, `auto`, `cpu` ou `skip` para controlar como o `workerctl.sh` instala o PyTorch. O padrao atual do projeto e `cuda`
 - `PYTORCH_INDEX_URL`: indice PyTorch usado quando o modo CUDA estiver ativo. Se ficar vazio, o `workerctl.sh` escolhe automaticamente `cu128` em GPUs Blackwell/B200 e `cu124` nas demais GPUs NVIDIA
 - `WORKER_SHARED_TOKEN`: token compartilhado com o frontend

@@ -18,6 +18,7 @@ from app.config import (
     ROBOFLOW_CLASSES_PARAMETER,
     ROBOFLOW_CONFIDENCE,
     ROBOFLOW_CONFIDENCE_PARAMETER,
+    ROBOFLOW_FALLBACK_MAX_SIDES,
     ROBOFLOW_IMAGE_INPUT,
     ROBOFLOW_MAX_IMAGE_SIDE,
     ROBOFLOW_TIMEOUT_SECONDS,
@@ -25,6 +26,18 @@ from app.config import (
     ROBOFLOW_WORKFLOW,
     ROBOFLOW_WORKSPACE,
 )
+from app.logging_utils import get_logger
+
+
+logger = get_logger("facilita.worker.roboflow")
+TRANSIENT_ROBOFLOW_STATUS_CODES = {502, 503, 504}
+
+
+class RoboflowWorkflowError(Exception):
+    def __init__(self, message: str, *, status_code: int | None = None, transient: bool = False):
+        super().__init__(message)
+        self.status_code = status_code
+        self.transient = transient
 
 
 def normalize_class_key(value) -> str:
@@ -258,15 +271,16 @@ def class_mask_from_result(
     }
 
 
-def resize_for_roboflow(image: Image.Image) -> tuple[Image.Image, dict]:
+def resize_for_roboflow(image: Image.Image, *, max_side: int | None = None) -> tuple[Image.Image, dict]:
     original_size = {"original_width": image.width, "original_height": image.height}
-    max_side = int(ROBOFLOW_MAX_IMAGE_SIDE or 0)
+    max_side = int(ROBOFLOW_MAX_IMAGE_SIDE if max_side is None else max_side or 0)
     if not max_side or max(image.size) <= max_side:
         return image, {
             "resized": False,
             **original_size,
             "inference_width": image.width,
             "inference_height": image.height,
+            "max_image_side": max_side or None,
         }
 
     resized = image.copy()
@@ -278,6 +292,26 @@ def resize_for_roboflow(image: Image.Image) -> tuple[Image.Image, dict]:
         "inference_height": resized.height,
         "max_image_side": max_side,
     }
+
+
+def roboflow_image_variants(source_image: Image.Image) -> list[tuple[Image.Image, dict]]:
+    max_sides = []
+    if ROBOFLOW_MAX_IMAGE_SIDE:
+        max_sides.append(int(ROBOFLOW_MAX_IMAGE_SIDE))
+    else:
+        max_sides.append(0)
+    max_sides.extend(int(side) for side in ROBOFLOW_FALLBACK_MAX_SIDES if int(side) > 0)
+
+    variants = []
+    seen_sizes = set()
+    for max_side in max_sides:
+        image, metadata = resize_for_roboflow(source_image, max_side=max_side)
+        size_key = image.size
+        if size_key in seen_sizes:
+            continue
+        seen_sizes.add(size_key)
+        variants.append((image, metadata))
+    return variants
 
 
 def resolve_confidence(value) -> float | None:
@@ -305,6 +339,15 @@ def encode_image_base64_jpeg(image: Image.Image) -> str:
     buffer = BytesIO()
     image.convert("RGB").save(buffer, format="JPEG")
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+
+def compact_error_detail(value: str | None, *, limit: int = 500) -> str:
+    normalized = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not normalized:
+        return "sem detalhe"
+    if len(normalized) <= limit:
+        return normalized
+    return f"{normalized[:limit].rstrip()}..."
 
 
 def call_roboflow_workflow(image: Image.Image, parameters: dict) -> dict | list:
@@ -336,11 +379,18 @@ def call_roboflow_workflow(image: Image.Image, parameters: dict) -> dict | list:
             timeout=ROBOFLOW_TIMEOUT_SECONDS,
         )
     except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"Falha de rede ao chamar Roboflow: {exc}") from exc
+        raise RoboflowWorkflowError(
+            f"Falha de rede ao chamar Roboflow: {compact_error_detail(str(exc))}",
+            transient=True,
+        ) from exc
 
     if response.status_code >= 400:
-        detail = response.text[:800] if response.text else response.reason
-        raise HTTPException(status_code=502, detail=f"Roboflow retornou HTTP {response.status_code}: {detail}")
+        detail = compact_error_detail(response.text or response.reason)
+        raise RoboflowWorkflowError(
+            f"Roboflow retornou HTTP {response.status_code}: {detail}",
+            status_code=response.status_code,
+            transient=response.status_code in TRANSIENT_ROBOFLOW_STATUS_CODES,
+        )
 
     try:
         return response.json()
@@ -350,8 +400,6 @@ def call_roboflow_workflow(image: Image.Image, parameters: dict) -> dict | list:
 
 def run_roboflow_inference(source_image: Image.Image, *, confidence=None) -> dict:
     require_roboflow_config()
-    inference_image, image_preprocessing = resize_for_roboflow(source_image)
-    image_rgb = np.asarray(inference_image)
     confidence_value = resolve_confidence(confidence)
     parameters = {}
     if ROBOFLOW_CLASSES_PARAMETER:
@@ -359,7 +407,61 @@ def run_roboflow_inference(source_image: Image.Image, *, confidence=None) -> dic
     if ROBOFLOW_CONFIDENCE_PARAMETER and confidence_value is not None:
         parameters[ROBOFLOW_CONFIDENCE_PARAMETER] = float(confidence_value)
 
-    result = call_roboflow_workflow(inference_image, parameters)
+    variants = roboflow_image_variants(source_image)
+    attempts = []
+    last_error: RoboflowWorkflowError | None = None
+    for attempt_index, (inference_image, image_preprocessing) in enumerate(variants, start=1):
+        attempt_metadata = {
+            "attempt": attempt_index,
+            "inference_width": inference_image.width,
+            "inference_height": inference_image.height,
+            "max_image_side": image_preprocessing.get("max_image_side"),
+        }
+        try:
+            logger.info(
+                "Chamando Workflow Roboflow: attempt=%s size=%sx%s max_side=%s",
+                attempt_index,
+                inference_image.width,
+                inference_image.height,
+                image_preprocessing.get("max_image_side"),
+            )
+            result = call_roboflow_workflow(inference_image, parameters)
+            attempt_metadata["status"] = "success"
+            attempts.append(attempt_metadata)
+            break
+        except RoboflowWorkflowError as exc:
+            last_error = exc
+            attempt_metadata.update(
+                {
+                    "status": "failed",
+                    "error": str(exc),
+                    "http_status": exc.status_code,
+                    "transient": exc.transient,
+                }
+            )
+            attempts.append(attempt_metadata)
+            logger.warning(
+                "Falha no Workflow Roboflow: attempt=%s size=%sx%s transient=%s status=%s detail=%s",
+                attempt_index,
+                inference_image.width,
+                inference_image.height,
+                exc.transient,
+                exc.status_code,
+                exc,
+            )
+            if not exc.transient:
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
+            if attempt_index >= len(variants):
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Roboflow falhou apos {len(attempts)} tentativa(s): {exc}",
+                ) from exc
+
+    else:
+        detail = str(last_error) if last_error is not None else "Roboflow nao retornou resultado."
+        raise HTTPException(status_code=502, detail=detail)
+
+    image_rgb = np.asarray(inference_image)
     class_mask, output_metadata = class_mask_from_result(
         result,
         image_rgb.shape[:2],
@@ -377,6 +479,7 @@ def run_roboflow_inference(source_image: Image.Image, *, confidence=None) -> dic
             "image_input": ROBOFLOW_IMAGE_INPUT,
             "parameters": parameters,
             "image_preprocessing": image_preprocessing,
+            "attempts": attempts,
             **output_metadata,
         },
     }

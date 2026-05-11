@@ -38,6 +38,21 @@ def env_float(name: str, default: float | None = None) -> float | None:
         return default
 
 
+def env_int_tuple(name: str, default: tuple[int, ...] = ()) -> tuple[int, ...]:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    parsed = []
+    for chunk in value.split(","):
+        try:
+            item = int(chunk.strip())
+        except ValueError:
+            continue
+        if item > 0:
+            parsed.append(item)
+    return tuple(parsed)
+
+
 def default_repo_yolo_model() -> str:
     try:
         raw_value = DEFAULT_YOLO_MODEL_POINTER_FILE.read_text(encoding="utf-8").strip()
@@ -125,5 +140,6 @@ ROBOFLOW_CLASSES_PARAMETER = os.getenv("ROBOFLOW_CLASSES_PARAMETER", "classes").
 ROBOFLOW_CONFIDENCE = env_float("ROBOFLOW_CONFIDENCE", 0.4)
 ROBOFLOW_CONFIDENCE_PARAMETER = os.getenv("ROBOFLOW_CONFIDENCE_PARAMETER", "confidence").strip()
 ROBOFLOW_MAX_IMAGE_SIDE = max(0, env_int("ROBOFLOW_MAX_IMAGE_SIDE", 2560))
+ROBOFLOW_FALLBACK_MAX_SIDES = env_int_tuple("ROBOFLOW_FALLBACK_MAX_SIDES", (1920, 1280, 960))
 ROBOFLOW_USE_CACHE = env_bool("ROBOFLOW_USE_CACHE", True)
 ROBOFLOW_TIMEOUT_SECONDS = max(5, env_int("ROBOFLOW_TIMEOUT_SECONDS", 120))
