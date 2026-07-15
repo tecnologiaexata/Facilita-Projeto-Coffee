@@ -115,7 +115,8 @@ Fluxo YOLO local:
 1. Frontend/control plane cria job de inferencia.
 2. Worker Python baixa/carrega a imagem.
 3. Worker roda YOLO local.
-4. Worker salva artefatos e metricas.
+4. Quando `WORKER_DEFAULT_YOLO_MODEL` ou `.worker-default-yolo-model` apontar para um peso local existente, esse peso local tem prioridade na inferencia YOLO local. Isso nao altera as rotas Roboflow diretas ou em lote.
+5. Worker salva artefatos e metricas.
 
 Manter esses dois fluxos separados para evitar conflito de logica.
 

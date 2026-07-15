@@ -742,12 +742,13 @@ def _load_model_from_context(context: dict):
         or model.get("baseModel")
         or WORKER_DEFAULT_YOLO_MODEL
     )
+    resolved_local_model = resolve_yolo_model_reference(local_model_reference)
+    if Path(resolved_local_model).exists():
+        logger.info("Carregando modelo YOLO local para inferencia: path=%s", resolved_local_model)
+        yolo = YOLO(resolved_local_model)
+        return yolo, None, "local-default", None
+
     if not model_asset:
-        resolved_local_model = resolve_yolo_model_reference(local_model_reference)
-        if Path(resolved_local_model).exists():
-            logger.info("Carregando modelo YOLO local para inferencia: path=%s", resolved_local_model)
-            yolo = YOLO(resolved_local_model)
-            return yolo, None, "local-default", None
         raise HTTPException(
             status_code=400,
             detail=(
