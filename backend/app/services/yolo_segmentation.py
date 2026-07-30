@@ -253,7 +253,7 @@ def resolve_training_params(context: dict | None = None) -> dict:
         raw_imgsz = training.get("image_size") or training.get("imageSize")
     normalized_imgsz = _normalize_imgsz(raw_imgsz)
     if normalized_imgsz is None:
-        normalized_imgsz = 2560
+        normalized_imgsz = 1024
     native_resolution = _coerce_bool(
         training.get("native_resolution") or training.get("nativeResolution"),
         default=False,
@@ -281,8 +281,14 @@ def resolve_training_params(context: dict | None = None) -> dict:
         "cache": bool(training.get("cache", True)),
         "amp": bool(training.get("amp", True)),
         "seed": int(training.get("seed") or 42),
-        "conf": float(training.get("conf") or 0.05),
+        "conf": float(training.get("conf") or 0.07),
         "iou": float(training.get("iou") or 0.6),
+        "max_det": int(training.get("max_det") or training.get("maxDet") or 2500),
+        "agnostic_nms": _coerce_bool(
+            training.get("class_agnostic_nms") or training.get("classAgnosticNms"),
+            default=False,
+        ),
+        "max_candidates": int(training.get("max_candidates") or training.get("maxCandidates") or 3000),
         "mask_threshold": float(training.get("mask_threshold") or training.get("maskThreshold") or 0.5),
         "degrees": float(training.get("degrees") or 2.0),
         "translate": float(training.get("translate") or 0.03),
@@ -506,16 +512,22 @@ def build_yolo_class_mask(result, *, image_shape: tuple[int, int], mask_threshol
     return class_mask
 
 
+def _ultralytics_source_from_rgb(image_rgb: np.ndarray) -> np.ndarray:
+    return cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+
+
 def predict_sample_class_mask(model, image_rgb: np.ndarray, *, params: dict, device: str) -> np.ndarray:
     image_shape = image_rgb.shape[:2]
     predict_imgsz = resolve_prediction_imgsz(params, image_shape)
     if not _should_tile_image(params, image_shape):
         result = model.predict(
-            source=image_rgb,
+            source=_ultralytics_source_from_rgb(image_rgb),
             task="segment",
             imgsz=predict_imgsz,
             conf=params["conf"],
             iou=params["iou"],
+            max_det=params["max_det"],
+            agnostic_nms=params["agnostic_nms"],
             retina_masks=True,
             verbose=False,
             device=device,
@@ -532,11 +544,13 @@ def predict_sample_class_mask(model, image_rgb: np.ndarray, *, params: dict, dev
         y0, y1, x0, x1 = window["y0"], window["y1"], window["x0"], window["x1"]
         tile_rgb = image_rgb[y0:y1, x0:x1]
         tile_result = model.predict(
-            source=tile_rgb,
+            source=_ultralytics_source_from_rgb(tile_rgb),
             task="segment",
             imgsz=int(params["tile_size"]),
             conf=params["conf"],
             iou=params["iou"],
+            max_det=params["max_det"],
+            agnostic_nms=params["agnostic_nms"],
             retina_masks=True,
             verbose=False,
             device=device,

@@ -58,6 +58,8 @@ Use `venv` por padrao. Rodar fora dela pode misturar `numpy/scipy/sklearn` do si
 - `WORKER_DEFAULT_YOLO_DEVICE`: GPU padrao usada pelo YOLO, por exemplo `0`
 - `WORKER_DEFAULT_YOLO_MODEL`: caminho local opcional para um checkpoint `.pt` ou para uma pasta com pesos; pode ser usado como base no treino e, quando existir localmente, tem prioridade na inferencia YOLO local
 - `.worker-default-yolo-model`: arquivo versionado opcional na raiz do repositorio com um caminho local de pesos; e usado quando `WORKER_DEFAULT_YOLO_MODEL` nao vier definido no `.env`
+
+A inferencia YOLO local usa por padrao `imgsz=1024`, confianca `0.07`, IoU `0.60`, ate `2500` deteccoes, NMS por classe e ate `3000` candidatos, equivalentes ao Workflow Roboflow publicado. A plataforma grava esses parametros em `yolo_parameters` em cada job local, e o resultado preserva os valores em `metadata`. Imagens RGB sao convertidas para BGR antes de serem entregues ao Ultralytics.
 - `INFERENCE_PROVIDER`: provider padrao da inferencia, `local_yolo` ou `roboflow`; a tela tambem pode enviar o provider por job
 - `ROBOFLOW_API_KEY`, `ROBOFLOW_API_URL`, `ROBOFLOW_WORKSPACE`, `ROBOFLOW_WORKFLOW`: configuracao do Workflow Roboflow usado quando o provider for `roboflow`
 - `ROBOFLOW_CLASSES`, `ROBOFLOW_CLASSES_PARAMETER`, `ROBOFLOW_CONFIDENCE`, `ROBOFLOW_CONFIDENCE_PARAMETER`, `ROBOFLOW_MAX_IMAGE_SIDE`, `ROBOFLOW_FALLBACK_MAX_SIDES`, `ROBOFLOW_USE_CACHE`, `ROBOFLOW_TIMEOUT_SECONDS`: parametros enviados ao Workflow, pre-processamento da imagem e fallbacks de tamanho quando o Roboflow retornar erro transitorio
@@ -77,7 +79,7 @@ O frontend pode enviar `agronomic_association` e `association_asset` no payload 
 Se voce ja baixou os pesos do YOLO manualmente, pode apontar o worker para eles no `.env`, por exemplo:
 
 ```env
-WORKER_DEFAULT_YOLO_MODEL=C:\Users\Michael - Facilita\Desktop\pesos\14-07-2026
+WORKER_DEFAULT_YOLO_MODEL=C:\Users\Michael - Facilita\Desktop\pesos\30-07-2026
 ```
 
 Tambem e possivel versionar um default para a equipe na raiz do repositorio, usando o arquivo `.worker-default-yolo-model`. O worker usa esse arquivo quando o caminho existir localmente e quando `WORKER_DEFAULT_YOLO_MODEL` nao tiver sido definido no ambiente.

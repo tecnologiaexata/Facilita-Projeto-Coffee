@@ -939,7 +939,26 @@ def _process_inference(payload: dict, context: dict, report_progress=None) -> di
 
     agronomic_association = _agronomic_association_from_payload(payload, context)
     association_asset = _association_asset_from_payload(payload, context)
-    params = resolve_training_params(context)
+    local_yolo_parameters = payload.get("yolo_parameters") or payload.get("yoloParameters") or {}
+    local_context = dict(context)
+    local_training = dict(context.get("training") or {})
+    if isinstance(local_yolo_parameters, dict) and local_yolo_parameters:
+        local_training.update(
+            {
+                "imgsz": local_yolo_parameters.get("imgsz"),
+                "conf": local_yolo_parameters.get("confidence"),
+                "iou": local_yolo_parameters.get("iou"),
+                "max_det": local_yolo_parameters.get("max_det"),
+                "class_agnostic_nms": local_yolo_parameters.get("class_agnostic_nms"),
+                "max_candidates": local_yolo_parameters.get("max_candidates"),
+            }
+        )
+        local_training = {key: value for key, value in local_training.items() if value is not None}
+    local_context["training"] = local_training
+    params = resolve_training_params(local_context)
+    requested_confidence = _payload_value(payload, "confidence", "confidence")
+    if requested_confidence not in (None, "") and not local_yolo_parameters:
+        params["conf"] = float(requested_confidence)
     requested_device = normalize_requested_device(params.get("device"))
     runtime = torch_runtime_info()
     if runtime.get("cuda_available"):
@@ -1049,6 +1068,11 @@ def _process_inference(payload: dict, context: dict, report_progress=None) -> di
                 "association_asset": association_asset,
                 "plant_inference_mode": "exclusion",
                 "imgsz": predict_imgsz,
+                "confidence": params.get("conf"),
+                "iou": params.get("iou"),
+                "max_det": params.get("max_det"),
+                "class_agnostic_nms": params.get("agnostic_nms"),
+                "max_candidates": params.get("max_candidates"),
                 "native_resolution": params.get("native_resolution"),
                 "tile_enabled": params.get("tile_enabled"),
                 "tile_size": params.get("tile_size"),
