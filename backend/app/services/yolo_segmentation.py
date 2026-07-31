@@ -528,7 +528,7 @@ def predict_sample_class_mask(model, image_rgb: np.ndarray, *, params: dict, dev
             iou=params["iou"],
             max_det=params["max_det"],
             agnostic_nms=params["agnostic_nms"],
-            retina_masks=True,
+            retina_masks=False,
             verbose=False,
             device=device,
         )[0]
@@ -551,7 +551,7 @@ def predict_sample_class_mask(model, image_rgb: np.ndarray, *, params: dict, dev
             iou=params["iou"],
             max_det=params["max_det"],
             agnostic_nms=params["agnostic_nms"],
-            retina_masks=True,
+            retina_masks=False,
             verbose=False,
             device=device,
         )[0]

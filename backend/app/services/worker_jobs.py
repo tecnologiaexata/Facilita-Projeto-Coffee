@@ -48,6 +48,7 @@ from app.services.storage import build_split_map, class_catalog, make_asset_id, 
 
 
 logger = get_logger("facilita.worker.jobs")
+INFERENCE_OVERLAY_EVERY = 50
 
 
 def _payload_value(payload: dict, snake_key: str, camel_key: str):
@@ -807,6 +808,42 @@ def _association_asset_from_payload(payload: dict, context: dict) -> dict | None
     return value if isinstance(value, dict) and value else None
 
 
+def _positive_int_payload(payload: dict, snake_key: str, camel_key: str) -> int | None:
+    value = _payload_value(payload, snake_key, camel_key)
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _inference_visual_sampling(payload: dict) -> dict:
+    image_index = _positive_int_payload(payload, "image_index", "imageIndex")
+    image_total = _positive_int_payload(payload, "image_total", "imageTotal")
+    overlay_every = (
+        _positive_int_payload(payload, "overlay_every", "overlayEvery")
+        or INFERENCE_OVERLAY_EVERY
+    )
+
+    if image_index is None or image_total is None:
+        return {
+            "image_index": image_index,
+            "image_total": image_total,
+            "overlay_every": overlay_every,
+            "overlay_saved": True,
+            "reason": "single_or_legacy_job",
+        }
+
+    overlay_saved = image_index in {1, image_total} or image_index % overlay_every == 0
+    return {
+        "image_index": image_index,
+        "image_total": image_total,
+        "overlay_every": overlay_every,
+        "overlay_saved": overlay_saved,
+        "reason": "visual_sampling",
+    }
+
+
 def _process_roboflow_inference(payload: dict, context: dict, report_progress=None) -> dict:
     image_source = _payload_value(payload, "image_url", "imageUrl")
     if not image_source:
@@ -815,6 +852,7 @@ def _process_roboflow_inference(payload: dict, context: dict, report_progress=No
     output = context.get("output") or {}
     agronomic_association = _agronomic_association_from_payload(payload, context)
     association_asset = _association_asset_from_payload(payload, context)
+    visual_sampling = _inference_visual_sampling(payload)
     inference_run_id = _context_value(output, "inference_run_id", "inferenceRunId") or make_asset_id("infer")
     output_prefix = _context_value(output, "prefix", "prefix") or f"inference-runs/{inference_run_id}"
     confidence = _payload_value(payload, "confidence", "confidence")
@@ -864,7 +902,6 @@ def _process_roboflow_inference(payload: dict, context: dict, report_progress=No
         output_mode=roboflow_metadata.get("output_mode"),
     )
     color_mask = build_color_mask(prediction)
-    overlay = build_overlay(image_rgb, prediction)
     annotation_text = build_yolo_annotation_text_from_mask(prediction)
     dataset_image_filename = _dataset_image_filename(original_filename, inference_run_id)
     dataset_label_filename = f"{os.path.splitext(dataset_image_filename)[0]}.txt"
@@ -872,8 +909,37 @@ def _process_roboflow_inference(payload: dict, context: dict, report_progress=No
     image_bytes = _encode_image_for_filename(inference_image, dataset_image_filename)
     mask_bytes = _encode_png(Image.fromarray(prediction, mode="L"))
     color_mask_bytes = _encode_png(Image.fromarray(color_mask))
-    overlay_bytes = _encode_png(Image.fromarray(overlay))
     metrics = calculate_inference_payload(prediction)
+
+    assets = {
+        "image": upload_blob_bytes(
+            f"{output_prefix}/dataset/images/{dataset_image_filename}",
+            image_bytes,
+        ),
+        "mask": upload_blob_bytes(f"{output_prefix}/mask.png", mask_bytes, content_type="image/png"),
+        "color_mask": upload_blob_bytes(
+            f"{output_prefix}/color-mask.png",
+            color_mask_bytes,
+            content_type="image/png",
+        ),
+        "annotation_txt": upload_blob_bytes(
+            f"{output_prefix}/dataset/labels/{dataset_label_filename}",
+            annotation_text.encode("utf-8"),
+            content_type="text/plain; charset=utf-8",
+        ),
+        "roboflow_result_json": upload_json_blob(
+            f"{output_prefix}/roboflow-result.json",
+            roboflow_result["raw_result"],
+        ),
+    }
+    if visual_sampling["overlay_saved"]:
+        overlay = build_overlay(image_rgb, prediction)
+        overlay_bytes = _encode_png(Image.fromarray(overlay))
+        assets["overlay"] = upload_blob_bytes(
+            f"{output_prefix}/overlay.png",
+            overlay_bytes,
+            content_type="image/png",
+        )
 
     item = {
         "id": inference_run_id,
@@ -883,32 +949,7 @@ def _process_roboflow_inference(payload: dict, context: dict, report_progress=No
         "width": inference_image.width,
         "height": inference_image.height,
         "metrics": metrics,
-        "assets": {
-            "image": upload_blob_bytes(
-                f"{output_prefix}/dataset/images/{dataset_image_filename}",
-                image_bytes,
-            ),
-            "mask": upload_blob_bytes(f"{output_prefix}/mask.png", mask_bytes, content_type="image/png"),
-            "color_mask": upload_blob_bytes(
-                f"{output_prefix}/color-mask.png",
-                color_mask_bytes,
-                content_type="image/png",
-            ),
-            "overlay": upload_blob_bytes(
-                f"{output_prefix}/overlay.png",
-                overlay_bytes,
-                content_type="image/png",
-            ),
-            "annotation_txt": upload_blob_bytes(
-                f"{output_prefix}/dataset/labels/{dataset_label_filename}",
-                annotation_text.encode("utf-8"),
-                content_type="text/plain; charset=utf-8",
-            ),
-            "roboflow_result_json": upload_json_blob(
-                f"{output_prefix}/roboflow-result.json",
-                roboflow_result["raw_result"],
-            ),
-        },
+        "assets": assets,
         "metadata": {
             "source_reference": {"image_url": image_source},
             "blob_access": blob_access(),
@@ -916,6 +957,7 @@ def _process_roboflow_inference(payload: dict, context: dict, report_progress=No
             "provider": "roboflow",
             "agronomic_association": agronomic_association,
             "association_asset": association_asset,
+            "visual_verification": visual_sampling,
             "roboflow": roboflow_metadata,
             "plant_inference_mode": "exclusion",
             "dataset_export": {
@@ -939,6 +981,7 @@ def _process_inference(payload: dict, context: dict, report_progress=None) -> di
 
     agronomic_association = _agronomic_association_from_payload(payload, context)
     association_asset = _association_asset_from_payload(payload, context)
+    visual_sampling = _inference_visual_sampling(payload)
     local_yolo_parameters = payload.get("yolo_parameters") or payload.get("yoloParameters") or {}
     local_context = dict(context)
     local_training = dict(context.get("training") or {})
@@ -1018,7 +1061,6 @@ def _process_inference(payload: dict, context: dict, report_progress=None) -> di
             training_run_id,
         )
         color_mask = build_color_mask(prediction)
-        overlay = build_overlay(image_rgb, prediction)
         annotation_text = build_yolo_annotation_text_from_mask(prediction)
         dataset_image_filename = _dataset_image_filename(original_filename, inference_run_id)
         dataset_label_filename = f"{os.path.splitext(dataset_image_filename)[0]}.txt"
@@ -1026,8 +1068,33 @@ def _process_inference(payload: dict, context: dict, report_progress=None) -> di
         image_bytes = _encode_image_for_filename(source_image, dataset_image_filename)
         mask_bytes = _encode_png(Image.fromarray(prediction, mode="L"))
         color_mask_bytes = _encode_png(Image.fromarray(color_mask))
-        overlay_bytes = _encode_png(Image.fromarray(overlay))
         metrics = calculate_inference_payload(prediction)
+
+        assets = {
+            "image": upload_blob_bytes(
+                f"{output_prefix}/dataset/images/{dataset_image_filename}",
+                image_bytes,
+            ),
+            "mask": upload_blob_bytes(f"{output_prefix}/mask.png", mask_bytes, content_type="image/png"),
+            "color_mask": upload_blob_bytes(
+                f"{output_prefix}/color-mask.png",
+                color_mask_bytes,
+                content_type="image/png",
+            ),
+            "annotation_txt": upload_blob_bytes(
+                f"{output_prefix}/dataset/labels/{dataset_label_filename}",
+                annotation_text.encode("utf-8"),
+                content_type="text/plain; charset=utf-8",
+            ),
+        }
+        if visual_sampling["overlay_saved"]:
+            overlay = build_overlay(image_rgb, prediction)
+            overlay_bytes = _encode_png(Image.fromarray(overlay))
+            assets["overlay"] = upload_blob_bytes(
+                f"{output_prefix}/overlay.png",
+                overlay_bytes,
+                content_type="image/png",
+            )
 
         item = {
             "id": inference_run_id,
@@ -1037,28 +1104,7 @@ def _process_inference(payload: dict, context: dict, report_progress=None) -> di
             "width": source_image.width,
             "height": source_image.height,
             "metrics": metrics,
-            "assets": {
-                "image": upload_blob_bytes(
-                    f"{output_prefix}/dataset/images/{dataset_image_filename}",
-                    image_bytes,
-                ),
-                "mask": upload_blob_bytes(f"{output_prefix}/mask.png", mask_bytes, content_type="image/png"),
-                "color_mask": upload_blob_bytes(
-                    f"{output_prefix}/color-mask.png",
-                    color_mask_bytes,
-                    content_type="image/png",
-                ),
-                "overlay": upload_blob_bytes(
-                    f"{output_prefix}/overlay.png",
-                    overlay_bytes,
-                    content_type="image/png",
-                ),
-                "annotation_txt": upload_blob_bytes(
-                    f"{output_prefix}/dataset/labels/{dataset_label_filename}",
-                    annotation_text.encode("utf-8"),
-                    content_type="text/plain; charset=utf-8",
-                ),
-            },
+            "assets": assets,
             "metadata": {
                 "source_reference": {"image_url": image_source},
                 "blob_access": blob_access(),
@@ -1077,6 +1123,7 @@ def _process_inference(payload: dict, context: dict, report_progress=None) -> di
                 "tile_enabled": params.get("tile_enabled"),
                 "tile_size": params.get("tile_size"),
                 "tile_overlap": params.get("tile_overlap"),
+                "visual_verification": visual_sampling,
                 "dataset_export": {
                     "image_path": f"dataset/images/{dataset_image_filename}",
                     "label_path": f"dataset/labels/{dataset_label_filename}",

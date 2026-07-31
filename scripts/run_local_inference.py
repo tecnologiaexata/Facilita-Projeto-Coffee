@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -104,7 +104,7 @@ def main() -> None:
             f"Valor resolvido: {model_path}"
         )
 
-    image = Image.open(image_path).convert("RGB")
+    image = ImageOps.exif_transpose(Image.open(image_path)).convert("RGB")
     image_rgb = np.array(image)
 
     yolo = YOLO(str(resolved_model_path))
